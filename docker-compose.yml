@@ -1,0 +1,79 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: promptguard
+      POSTGRES_PASSWORD: promptguard
+      POSTGRES_DB: promptguard
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U promptguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://promptguard:promptguard@db:5432/promptguard
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GOOGLE_API_KEY: ${GEMINI_API_KEY}
+      # Regression thresholds (optional — defaults shown)
+      REGRESSION_SIMILARITY_DROP_THRESHOLD: ${REGRESSION_SIMILARITY_DROP_THRESHOLD:-0.10}
+      REGRESSION_LATENCY_SPIKE_THRESHOLD: ${REGRESSION_LATENCY_SPIKE_THRESHOLD:-0.50}
+      REGRESSION_COST_SPIKE_THRESHOLD: ${REGRESSION_COST_SPIKE_THRESHOLD:-0.20}
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: celery -A app.tasks.celery_app worker --loglevel=info --queues=evaluations
+    environment:
+      DATABASE_URL: postgresql://promptguard:promptguard@db:5432/promptguard
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      # Worker makes the actual Gemini API calls — must have the key
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GOOGLE_API_KEY: ${GEMINI_API_KEY}
+      REGRESSION_SIMILARITY_DROP_THRESHOLD: ${REGRESSION_SIMILARITY_DROP_THRESHOLD:-0.10}
+      REGRESSION_LATENCY_SPIKE_THRESHOLD: ${REGRESSION_LATENCY_SPIKE_THRESHOLD:-0.50}
+      REGRESSION_COST_SPIKE_THRESHOLD: ${REGRESSION_COST_SPIKE_THRESHOLD:-0.20}
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
