@@ -66,6 +66,7 @@ promptguard/
 ├── docker-compose.yml
 ├── Dockerfile
 ├── requirements.txt
+├── seed.py
 └── .env.example
 ```
 
@@ -115,45 +116,19 @@ docker compose up --build
 
 The API will be available at `http://localhost:8000`. Interactive API docs at `http://localhost:8000/docs`.
 
+
 ### Running an Evaluation
 
 ```bash
-# 1. Create a prompt
-curl -X POST http://localhost:8000/prompts/ \
-  -H "Content-Type: application/json" \
-  -d '{"version_tag": "v1", "prompt_text": "You are a concise assistant. Answer in one sentence.", "model_name": "llama3.2"}'
+# Start the stack
+docker compose up --build -d
 
-# 2. Create test cases
-curl -X POST http://localhost:8000/datasets/bulk \
-  -H "Content-Type: application/json" \
-  -d '[
-    {"input_query": "What is 2 + 2?", "expected_output": "2 + 2 equals 4."},
-    {"input_query": "What is the capital of France?", "expected_output": "The capital of France is Paris."}
-  ]'
-
-# 3. Trigger a baseline evaluation
-curl -X POST http://localhost:8000/evaluations/run \
-  -H "Content-Type: application/json" \
-  -d '{"prompt_id": 1, "dataset_ids": [1, 2], "is_baseline": true}'
-
-# 4. Poll until COMPLETED
-curl http://localhost:8000/evaluations/1
-
-# 5. Mark as official baseline
-curl -X PATCH http://localhost:8000/evaluations/1/set-baseline
-
-# 6. Run a candidate evaluation
-curl -X POST http://localhost:8000/evaluations/run \
-  -H "Content-Type: application/json" \
-  -d '{"prompt_id": 2, "dataset_ids": [1, 2]}'
-
-# 7. Compare via JSON API
-curl "http://localhost:8000/evaluations/compare?baseline_run_id=1&candidate_run_id=2"
-
-# 8. Open the visual dashboard in your browser
-open http://localhost:8000/dashboard/compare?baseline_run_id=1&candidate_run_id=2
+# Run the seed script (installs httpx if needed, then seeds everything)
+pip install httpx
+python seed.py
 ```
 
+The script will print a URL when it finishes. Open it in your browser to see the dashboard.
 ---
 
 ## Visual Dashboard
