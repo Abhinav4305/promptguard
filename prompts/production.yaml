@@ -1,0 +1,15 @@
+# prompts/production.yaml
+#
+# Single source of truth for the prompt currently considered "live."
+#
+# Phase 1 of the CI plan reads this file two ways:
+#   - on push to main:          read at the new HEAD -> becomes the baseline
+#   - on a pull_request to main: read on the PR branch -> becomes the candidate
+#                                read on main (unchanged) -> becomes the baseline
+#
+# Changing the live prompt means editing this file and opening a PR —
+# that edit IS the diff the regression check evaluates.
+
+version_tag: v1-concise
+prompt_text: "You are a concise assistant. Answer in one short sentence."
+model_name: llama3.2
