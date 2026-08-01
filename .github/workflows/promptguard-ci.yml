@@ -15,6 +15,32 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Fetch main for baseline comparison
+        if: github.event_name == 'pull_request'
+        run: git fetch origin main
+
+      - name: Read live prompt from production.yaml
+        id: read_candidate_prompt
+        run: |
+          pip install pyyaml --quiet
+          VERSION_TAG=$(python3 -c "import yaml; print(yaml.safe_load(open('prompts/production.yaml'))['version_tag'])")
+          MODEL_NAME=$(python3 -c "import yaml; print(yaml.safe_load(open('prompts/production.yaml'))['model_name'])")
+          python3 -c "import yaml, json; data = yaml.safe_load(open('prompts/production.yaml')); print(json.dumps(data['prompt_text']))" > /tmp/candidate_prompt_text.json
+          echo "version_tag=$VERSION_TAG" >> "$GITHUB_OUTPUT"
+          echo "model_name=$MODEL_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Read baseline prompt from main
+        if: github.event_name == 'pull_request'
+        id: read_baseline_prompt
+        run: |
+          git show origin/main:prompts/production.yaml > /tmp/baseline_production.yaml
+          pip install pyyaml --quiet
+          VERSION_TAG=$(python3 -c "import yaml; print(yaml.safe_load(open('/tmp/baseline_production.yaml'))['version_tag'])")
+          MODEL_NAME=$(python3 -c "import yaml; print(yaml.safe_load(open('/tmp/baseline_production.yaml'))['model_name'])")
+          python3 -c "import yaml, json; data = yaml.safe_load(open('/tmp/baseline_production.yaml')); print(json.dumps(data['prompt_text']))" > /tmp/baseline_prompt_text.json
+          echo "version_tag=$VERSION_TAG" >> "$GITHUB_OUTPUT"
+          echo "model_name=$MODEL_NAME" >> "$GITHUB_OUTPUT"
+
       - name: Install Ollama
         run: curl -fsSL https://ollama.com/install.sh | sh
 
@@ -55,11 +81,13 @@ jobs:
           exit 1
 
       - name: Seed baseline prompt
+        if: github.event_name == 'pull_request'
         id: baseline_prompt
         run: |
+          PROMPT_TEXT=$(cat /tmp/baseline_prompt_text.json)
           RESPONSE=$(curl -s -X POST http://localhost:8000/prompts/ \
             -H "Content-Type: application/json" \
-            -d '{"version_tag": "ci-baseline", "prompt_text": "You are a concise assistant. Answer in one sentence.", "model_name": "llama3.2"}')
+            -d "{\"version_tag\": \"${{ steps.read_baseline_prompt.outputs.version_tag }}\", \"prompt_text\": $PROMPT_TEXT, \"model_name\": \"${{ steps.read_baseline_prompt.outputs.model_name }}\"}")
           echo "Response: $RESPONSE"
           PROMPT_ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
           echo "prompt_id=$PROMPT_ID" >> "$GITHUB_OUTPUT"
@@ -67,9 +95,10 @@ jobs:
       - name: Seed candidate prompt
         id: candidate_prompt
         run: |
+          PROMPT_TEXT=$(cat /tmp/candidate_prompt_text.json)
           RESPONSE=$(curl -s -X POST http://localhost:8000/prompts/ \
             -H "Content-Type: application/json" \
-            -d '{"version_tag": "ci-candidate", "prompt_text": "You are a concise assistant. Answer in one sentence.", "model_name": "llama3.2"}')
+            -d "{\"version_tag\": \"${{ steps.read_candidate_prompt.outputs.version_tag }}\", \"prompt_text\": $PROMPT_TEXT, \"model_name\": \"${{ steps.read_candidate_prompt.outputs.model_name }}\"}")
           echo "Response: $RESPONSE"
           PROMPT_ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
           echo "prompt_id=$PROMPT_ID" >> "$GITHUB_OUTPUT"
@@ -89,6 +118,7 @@ jobs:
           echo "ids=$IDS" >> "$GITHUB_OUTPUT"
 
       - name: Run baseline evaluation
+        if: github.event_name == 'pull_request'
         id: run_baseline
         run: |
           DATASET_IDS="[${{ steps.datasets.outputs.ids }}]"
@@ -100,6 +130,7 @@ jobs:
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Poll baseline run until COMPLETED
+        if: github.event_name == 'pull_request'
         run: |
           RUN_ID=${{ steps.run_baseline.outputs.run_id }}
           for i in {1..30}; do
@@ -113,10 +144,12 @@ jobs:
           exit 1
 
       - name: Mark baseline run as official baseline
+        if: github.event_name == 'pull_request'
         run: |
           curl -s -X PATCH http://localhost:8000/evaluations/${{ steps.run_baseline.outputs.run_id }}/set-baseline
 
       - name: Run candidate evaluation
+        if: github.event_name == 'pull_request'
         id: run_candidate
         run: |
           DATASET_IDS="[${{ steps.datasets.outputs.ids }}]"
@@ -128,6 +161,7 @@ jobs:
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Poll candidate run until COMPLETED
+        if: github.event_name == 'pull_request'
         run: |
           RUN_ID=${{ steps.run_candidate.outputs.run_id }}
           for i in {1..30}; do
@@ -141,6 +175,7 @@ jobs:
           exit 1
 
       - name: Compare candidate against baseline
+        if: github.event_name == 'pull_request'
         id: compare
         run: |
           RESPONSE=$(curl -s "http://localhost:8000/evaluations/compare?baseline_run_id=${{ steps.run_baseline.outputs.run_id }}&candidate_run_id=${{ steps.run_candidate.outputs.run_id }}")
@@ -159,6 +194,37 @@ jobs:
             exit 1
           fi
           echo "No regression detected — $SUMMARY"
+
+      - name: Run evaluation and establish new baseline
+        if: github.event_name == 'push'
+        id: run_push_eval
+        run: |
+          DATASET_IDS="[${{ steps.datasets.outputs.ids }}]"
+          RESPONSE=$(curl -s -X POST http://localhost:8000/evaluations/run \
+            -H "Content-Type: application/json" \
+            -d "{\"prompt_id\": ${{ steps.candidate_prompt.outputs.prompt_id }}, \"dataset_ids\": $DATASET_IDS, \"is_baseline\": true}")
+          echo "Response: $RESPONSE"
+          RUN_ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Poll push evaluation until COMPLETED
+        if: github.event_name == 'push'
+        run: |
+          RUN_ID=${{ steps.run_push_eval.outputs.run_id }}
+          for i in {1..30}; do
+            STATUS=$(curl -s http://localhost:8000/evaluations/$RUN_ID | python3 -c "import sys, json; print(json.load(sys.stdin)['status'])")
+            echo "Push evaluation status: $STATUS ($i/30)"
+            if [ "$STATUS" == "COMPLETED" ]; then exit 0; fi
+            if [ "$STATUS" == "FAILED" ]; then echo "Push evaluation failed"; exit 1; fi
+            sleep 5
+          done
+          echo "Push evaluation timed out"
+          exit 1
+
+      - name: Confirm baseline flag
+        if: github.event_name == 'push'
+        run: |
+          curl -s -X PATCH http://localhost:8000/evaluations/${{ steps.run_push_eval.outputs.run_id }}/set-baseline
 
       - name: Show worker logs (always, for debugging)
         if: always()
