@@ -74,6 +74,20 @@ jobs:
 
       - name: Build and start the stack
         run: docker compose up --build -d
+      
+      - name: Wait for worker to reach Ollama via host.docker.internal
+        run: |
+          for i in {1..30}; do
+            if docker compose exec -T worker python3 -c "import httpx; httpx.get('http://host.docker.internal:11434/api/tags', timeout=3)" 2>/dev/null; then
+              echo "Worker can reach Ollama"
+              exit 0
+            fi
+            echo "Waiting for worker -> Ollama connectivity... ($i/30)"
+            sleep 2
+          done
+          echo "Worker cannot reach Ollama via host.docker.internal"
+          docker compose logs worker --tail=50
+          exit 1
 
       - name: Wait for API to be healthy
         run: |
