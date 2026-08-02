@@ -49,7 +49,16 @@ jobs:
           OLLAMA_HOST: 0.0.0.0:11434
         run: |
           OLLAMA_HOST=0.0.0.0:11434 ollama serve &
-          sleep 5
+          for i in {1..30}; do
+            if curl -sf http://localhost:11434/api/tags > /dev/null; then
+              echo "Ollama is up"
+              exit 0
+            fi
+            echo "Waiting for Ollama... ($i/30)"
+            sleep 2
+          done
+          echo "Ollama failed to start in time"
+          exit 1
 
       - name: Pull llama3.2 model
         run: ollama pull llama3.2
