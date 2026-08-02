@@ -67,7 +67,8 @@ def run_evaluation(self, run_id: int) -> dict:
             db.commit()
             return {"run_id": run_id, "status": "COMPLETED", "results_count": 0}
 
-        # -- Per-dataset Ollama call + metric computation ---------------------        results_saved = 0
+        # -- Per-dataset Ollama call + metric computation ---------------------        
+        results_saved = 0
         for dataset in datasets:
             logger.info(
                 "Run %s | dataset %s | model=%s | query='%s...'",
