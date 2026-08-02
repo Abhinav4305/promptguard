@@ -17,16 +17,7 @@ logger = logging.getLogger(__name__)
 
 @celery_app.task(name="run_evaluation", queue="evaluations", bind=True, max_retries=2)
 def run_evaluation(self, run_id: int) -> dict:
-    """
-    Phase 3: Gemini evaluation loop via LiteLLM.
-
-    For each dataset row attached to this run:
-      1. Call Gemini via LiteLLM gateway (captures latency + token cost).
-      2. Compute similarity between actual output and expected output.
-      3. Update the pre-seeded EvaluationResult row with real metrics.
-
-    The run status progresses: PENDING -> RUNNING -> COMPLETED (or FAILED).
-    """
+    
     logger.info("Starting evaluation run_id=%s", run_id)
 
     db = SessionLocal()
@@ -76,7 +67,7 @@ def run_evaluation(self, run_id: int) -> dict:
             db.commit()
             return {"run_id": run_id, "status": "COMPLETED", "results_count": 0}
 
-        # -- Per-dataset Gemini call + metric computation ---------------------
+        # -- Per-dataset Ollama call + metric computation ---------------------        
         results_saved = 0
         for dataset in datasets:
             logger.info(
@@ -109,7 +100,7 @@ def run_evaluation(self, run_id: int) -> dict:
 
             except Exception as call_exc:
                 logger.exception(
-                    "Gemini call failed for run=%s dataset=%s: %s",
+                    "Ollama call failed for run=%s dataset=%s: %s",
                     run_id,
                     dataset.id,
                     call_exc,
