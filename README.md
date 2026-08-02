@@ -17,7 +17,7 @@ When you tweak a prompt, swap an LLM model, or adjust generation settings, there
 - Scores each response against expected output using **ROUGE-L** and **Levenshtein similarity** — no LLM-as-judge, no API costs for evaluation itself
 - Captures **latency** and **token cost** per call
 - Compares a new run against a **baseline run** across all three axes and applies configurable thresholds to produce a pass/fail verdict
-- **Fails the CI build** automatically on regression via a GitHub Actions workflow
+- **Fails the CI build** automatically on regression via a GitHub Actions workflow, with a branch protection rule on `main` that actually blocks a merge on failure
 - Serves a **visual comparison dashboard** at `/dashboard/compare` showing bar charts and per-question answer breakdowns
 
 ---
@@ -60,6 +60,8 @@ promptguard/
 │   │   ├── celery_app.py           # Celery instance
 │   │   └── evaluation_tasks.py     # Async LLM evaluation loop
 │   └── main.py                     # FastAPI app entrypoint
+├── prompts/
+│   └── production.yaml             # Source of truth for the currently "live" prompt
 ├── .github/
 │   └── workflows/
 │       └── promptguard-ci.yml      # GitHub Actions regression check
@@ -116,19 +118,30 @@ docker compose up --build
 
 The API will be available at `http://localhost:8000`. Interactive API docs at `http://localhost:8000/docs`.
 
-
 ### Running an Evaluation
 
 ```bash
 # Start the stack
 docker compose up --build -d
 
-# Run the seed script (installs httpx if needed, then seeds everything)
-pip install httpx
+# Run the seed script (installs httpx + pyyaml if needed, then seeds everything)
+pip install httpx pyyaml
 python seed.py
 ```
 
-The script will print a URL when it finishes. Open it in your browser to see the dashboard.
+The seed script reads the baseline prompt straight from `prompts/production.yaml`, so the local demo always reflects whatever prompt is actually considered "live." It then seeds a deliberately worse candidate prompt so the dashboard has a real regression to show, runs both evaluations, and prints a dashboard URL when it finishes. Open it in your browser to see the comparison.
+
+---
+
+## Changing the Live Prompt
+
+`prompts/production.yaml` is the single source of truth for the prompt currently in use. To propose a change:
+
+1. Edit `prompts/production.yaml` on a new branch
+2. Open a pull request against `main`
+3. CI automatically evaluates your candidate prompt against whatever `main` currently has, and reports a pass/fail regression check on the PR
+4. If it passes, merge — that version becomes the new baseline for the next person's change
+
 ---
 
 ## Visual Dashboard
@@ -144,17 +157,21 @@ Open `/dashboard/compare?baseline_run_id=X&candidate_run_id=Y` in any browser to
 
 ## CI/CD Pipeline
 
-The GitHub Actions workflow runs automatically on every push to `main` and on every pull request. It:
+The GitHub Actions workflow runs automatically on every push to `main` and on every pull request, and behaves differently depending on which:
 
-1. Installs Ollama and pulls `llama3.2` on a fresh Ubuntu runner
-2. Starts the full Docker stack
-3. Seeds a baseline prompt and evaluation datasets
-4. Runs a baseline evaluation and marks it
-5. Runs a candidate evaluation
-6. Calls `/evaluations/compare` and fails the build if `passed` is `false`
-7. Posts the full comparison JSON to the GitHub Actions job summary
+**On a pull request** — comparing a proposed change against what's currently live:
+1. Fetches `main` and reads `prompts/production.yaml` from both the PR branch (candidate) and `main` (baseline)
+2. Installs Ollama, pulls `llama3.2`, and starts the full Docker stack
+3. Seeds both prompt versions and the evaluation datasets
+4. Runs a baseline evaluation and a candidate evaluation
+5. Calls `/evaluations/compare` and fails the build if `passed` is `false`
+6. Posts the full comparison JSON to the GitHub Actions job summary
 
-A regression in any metric blocks the merge.
+**On a direct push to `main`** (typically a freshly merged PR) — establishing the new baseline:
+1. Reads `prompts/production.yaml` at the new commit
+2. Runs a single evaluation against it and marks the result the new official baseline — no comparison step, since there's nothing to compare a fresh merge against
+
+A branch protection rule on `main` requires the `regression-check` job to pass before a pull request can be merged, so a detected regression doesn't just get reported — it actually blocks the merge.
 
 ---
 
