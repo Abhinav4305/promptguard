@@ -2,16 +2,27 @@
 Seed script — run once after docker compose up to populate the database
 and trigger a comparison so the dashboard is immediately viewable.
 
+The baseline prompt is read from prompts/production.yaml — the same file
+GitHub Actions reads on every push and pull request — so this local demo
+always reflects whatever prompt is actually considered "live," instead of
+a second hardcoded copy that could quietly drift out of sync with it.
+
+The candidate prompt below is intentionally NOT read from anywhere real —
+it's a deliberately vaguer instruction, hardcoded here on purpose, so the
+demo always has a visible regression to show on the dashboard.
+
 Usage:
     python seed.py
 
-Then open: http://localhost:8000/dashboard/compare?baseline_run_id=1&candidate_run_id=2
+Then open the URL this script prints at the end.
 """
 
 import time
 import httpx
+import yaml
 
 BASE_URL = "http://localhost:8000"
+PRODUCTION_PROMPT_PATH = "prompts/production.yaml"
 
 
 def post(path, payload):
@@ -30,6 +41,11 @@ def patch(path):
     r = httpx.patch(f"{BASE_URL}{path}")
     r.raise_for_status()
     return r.json()
+
+
+def load_production_prompt():
+    with open(PRODUCTION_PROMPT_PATH) as f:
+        return yaml.safe_load(f)
 
 
 def wait_for_api():
@@ -63,18 +79,20 @@ def main():
 
     # ── Prompts ────────────────────────────────────────────────────────────
     print("Creating prompts...")
+    production_prompt = load_production_prompt()
     baseline_prompt = post("/prompts/", {
-        "version_tag": "v1-concise",
-        "prompt_text": "You are a concise assistant. Answer in one short sentence.",
-        "model_name": "llama3.2",
+        "version_tag": production_prompt["version_tag"],
+        "prompt_text": production_prompt["prompt_text"],
+        "model_name": production_prompt["model_name"],
     })
     candidate_prompt = post("/prompts/", {
         "version_tag": "v2-vague",
         "prompt_text": "Answer questions.",
         "model_name": "llama3.2",
     })
-    print(f"  Baseline prompt id={baseline_prompt['id']}")
-    print(f"  Candidate prompt id={candidate_prompt['id']}\n")
+    print(f"  Baseline prompt id={baseline_prompt['id']} "
+          f"({production_prompt['version_tag']}, from {PRODUCTION_PROMPT_PATH})")
+    print(f"  Candidate prompt id={candidate_prompt['id']} (v2-vague, hardcoded demo regression)\n")
 
     # ── Datasets ───────────────────────────────────────────────────────────
     print("Creating datasets...")
