@@ -68,7 +68,13 @@ def poll_until_completed(run_id: int, label: str) -> dict:
             print(f" done. ({len(run['results'])} results saved)")
             return run
         if run["status"] == "FAILED":
-            raise RuntimeError(f"{label} run {run_id} failed.")
+            raise RuntimeError(f"{label} run {run_id} failed: {run.get('error_message')}")
+        if run["status"] == "PARTIAL":
+            failed = [f"case {r['dataset_id']} [{r['error_category']}] {r['error_message']}"
+                      for r in run["results"] if r["status"] == "FAILED"]
+            raise RuntimeError(
+                f"{label} run {run_id} is PARTIAL ({run.get('error_message')}):\n  " + "\n  ".join(failed)
+            )
         print(".", end="", flush=True)
         time.sleep(3)
     raise RuntimeError(f"{label} run {run_id} timed out.")

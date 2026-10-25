@@ -15,6 +15,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Unit tests first: they need no Ollama, Docker or database, so a broken
+      # evaluator/comparator fails the build in seconds instead of after the model pull.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Run unit tests
+        run: |
+          pip install -r requirements-dev.txt
+          python -m pytest -q
+
       - name: Fetch main for baseline comparison
         if: github.event_name == 'pull_request'
         run: git fetch origin main
@@ -138,6 +152,11 @@ jobs:
             echo "Baseline run status: $STATUS ($i/30)"
             if [ "$STATUS" == "COMPLETED" ]; then exit 0; fi
             if [ "$STATUS" == "FAILED" ]; then echo "Baseline run failed"; exit 1; fi
+            if [ "$STATUS" == "PARTIAL" ]; then
+              echo "::error::Baseline run $RUN_ID is PARTIAL: some cases failed to execute (an evaluation failure, not a quality regression)"
+              curl -s http://localhost:8000/evaluations/$RUN_ID | python3 -c "import sys, json; r = json.load(sys.stdin); print(r.get('error_message')); [print('  case', x['dataset_id'], x['error_category'], x['error_message']) for x in r['results'] if x['status'] == 'FAILED']"
+              exit 1
+            fi
             sleep 5
           done
           echo "Baseline run timed out"
@@ -169,6 +188,11 @@ jobs:
             echo "Candidate run status: $STATUS ($i/30)"
             if [ "$STATUS" == "COMPLETED" ]; then exit 0; fi
             if [ "$STATUS" == "FAILED" ]; then echo "Candidate run failed"; exit 1; fi
+            if [ "$STATUS" == "PARTIAL" ]; then
+              echo "::error::Candidate run $RUN_ID is PARTIAL: some cases failed to execute (an evaluation failure, not a quality regression)"
+              curl -s http://localhost:8000/evaluations/$RUN_ID | python3 -c "import sys, json; r = json.load(sys.stdin); print(r.get('error_message')); [print('  case', x['dataset_id'], x['error_category'], x['error_message']) for x in r['results'] if x['status'] == 'FAILED']"
+              exit 1
+            fi
             sleep 5
           done
           echo "Candidate run timed out"
@@ -182,6 +206,8 @@ jobs:
           echo "$RESPONSE" | python3 -m json.tool
           PASSED=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['passed'])")
           SUMMARY=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['summary'])")
+          # OK = valid comparison; INCOMPLETE / INCOMPARABLE = evaluation problem, not a quality verdict
+          COMPARISON_STATUS=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('comparison_status', 'UNKNOWN'))")
           echo "## PromptGuard Regression Report" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Result:** $SUMMARY" >> "$GITHUB_STEP_SUMMARY"
@@ -190,7 +216,11 @@ jobs:
           echo "$RESPONSE" | python3 -m json.tool >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           if [ "$PASSED" != "True" ]; then
-            echo "::error::Regression detected — $SUMMARY"
+            if [ "$COMPARISON_STATUS" != "OK" ]; then
+              echo "::error::Evaluation $COMPARISON_STATUS (not a quality verdict; the gate fails safe) — $SUMMARY"
+            else
+              echo "::error::Regression detected — $SUMMARY"
+            fi
             exit 1
           fi
           echo "No regression detected — $SUMMARY"
@@ -216,6 +246,11 @@ jobs:
             echo "Push evaluation status: $STATUS ($i/30)"
             if [ "$STATUS" == "COMPLETED" ]; then exit 0; fi
             if [ "$STATUS" == "FAILED" ]; then echo "Push evaluation failed"; exit 1; fi
+            if [ "$STATUS" == "PARTIAL" ]; then
+              echo "::error::Push evaluation $RUN_ID is PARTIAL: some cases failed to execute, so it cannot become the baseline"
+              curl -s http://localhost:8000/evaluations/$RUN_ID | python3 -c "import sys, json; r = json.load(sys.stdin); print(r.get('error_message')); [print('  case', x['dataset_id'], x['error_category'], x['error_message']) for x in r['results'] if x['status'] == 'FAILED']"
+              exit 1
+            fi
             sleep 5
           done
           echo "Push evaluation timed out"
