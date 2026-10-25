@@ -17,7 +17,7 @@ from app.schemas.evaluation import (
     ComparisonResponse,
     EvaluationRunRequest,
     EvaluationRunResponse,
-    MetricDeltaResponse
+    MetricDeltaResponse,
 )
 from app.tasks.evaluation_tasks import run_evaluation
 
@@ -82,7 +82,7 @@ def trigger_evaluation(payload: EvaluationRunRequest, db: Session = Depends(get_
 
     run = (
         db.query(EvaluationRun)
-        .options(selectinload(EvaluationRun.evaluation_results))
+        .options(selectinload(EvaluationRun.evaluation_results).selectinload(EvaluationResult.scores))
         .filter(EvaluationRun.id == run.id)
         .first()
     )
@@ -99,10 +99,12 @@ def build_comparison_response(outcome: ComparisonOutcome) -> ComparisonResponse:
         passed=outcome.passed,
         summary=outcome.summary,
         issues=[ComparisonIssueResponse(**asdict(i)) for i in outcome.issues],
-        similarity=MetricDeltaResponse(**asdict(report.similarity)) if report else None,
+        similarity=MetricDeltaResponse(**asdict(report.similarity)) if report and report.similarity else None,
         latency=MetricDeltaResponse(**asdict(report.latency)) if report else None,
         cost=MetricDeltaResponse(**asdict(report.cost)) if report else None,
         per_dataset=report.per_dataset if report else [],
+        evaluators=[asdict(e) for e in report.evaluators] if report else [],
+        regressed_cases=[asdict(c) for c in report.regressed_cases] if report else [],
     )
 
 
@@ -116,11 +118,12 @@ def compare(
     Compare a candidate run against a baseline run.
 
     Before any metric is computed the two runs are checked for comparability
-    (same test cases, every case executed and scored). The result carries a
+    (same test cases, every case executed and scored by the same evaluators). The result carries a
     `comparison_status`:
 
       OK            runs are comparable. `passed` is the quality verdict:
-                      - Similarity drop > 10%  → FAIL
+                      - Drop of a gating evaluator's mean score beyond its threshold
+                        (similarity 10%, correctness 10%)   → FAIL
                       - Latency spike  > 50%   → FAIL
                       - Cost spike     > 20%   → FAIL
                     (thresholds overridable via environment variables)
@@ -153,12 +156,14 @@ def compare(
     # ALL rows of each run: failed and unfinished ones must reach the preflight.
     baseline_results = (
         db.query(EvaluationResult)
+        .options(selectinload(EvaluationResult.scores))
         .filter(EvaluationResult.run_id == baseline_run_id)
         .order_by(EvaluationResult.dataset_id)
         .all()
     )
     candidate_results = (
         db.query(EvaluationResult)
+        .options(selectinload(EvaluationResult.scores))
         .filter(EvaluationResult.run_id == candidate_run_id)
         .order_by(EvaluationResult.dataset_id)
         .all()
@@ -198,7 +203,7 @@ def set_baseline(run_id: int, db: Session = Depends(get_db)):
 
     run = (
         db.query(EvaluationRun)
-        .options(selectinload(EvaluationRun.evaluation_results))
+        .options(selectinload(EvaluationRun.evaluation_results).selectinload(EvaluationResult.scores))
         .filter(EvaluationRun.id == run_id)
         .first()
     )
@@ -209,7 +214,7 @@ def set_baseline(run_id: int, db: Session = Depends(get_db)):
 def get_run(run_id: int, db: Session = Depends(get_db)):
     run = (
         db.query(EvaluationRun)
-        .options(selectinload(EvaluationRun.evaluation_results))
+        .options(selectinload(EvaluationRun.evaluation_results).selectinload(EvaluationResult.scores))
         .filter(EvaluationRun.id == run_id)
         .first()
     )
@@ -222,6 +227,6 @@ def get_run(run_id: int, db: Session = Depends(get_db)):
 def list_runs(db: Session = Depends(get_db)):
     return (
         db.query(EvaluationRun)
-        .options(selectinload(EvaluationRun.evaluation_results))
+        .options(selectinload(EvaluationRun.evaluation_results).selectinload(EvaluationResult.scores))
         .all()
     )

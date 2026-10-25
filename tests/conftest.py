@@ -79,6 +79,29 @@ def fake_score(prediction: str, reference: str) -> float:
     return 1.0 if prediction == reference else 0.5
 
 
+def make_resolver(score_fn):
+    """
+    A resolver (same contract as resolve_evaluators) whose single evaluator is named
+    "text_similarity" but scores with `score_fn(prediction, reference)`. Lets executor
+    tests control scores without the real ROUGE/Levenshtein metric. Not registered.
+    """
+    from app.core.evaluators.base import Evaluator, EvaluatorKind, EvalResult
+    from app.core.evaluators.resolve import ResolvedEvaluator
+
+    class FakeSimilarity(Evaluator):
+        name = "text_similarity"
+        version = "test"
+        kind = EvaluatorKind.SIMILARITY
+
+        def evaluate(self, inp):
+            return EvalResult(score=score_fn(prediction=inp.prediction, reference=inp.reference))
+
+    return lambda eval_spec: [ResolvedEvaluator(FakeSimilarity(), True)]
+
+
+fake_resolver = make_resolver(fake_score)
+
+
 @pytest.fixture()
 def seed(db):
     """Factory helpers that persist rows and return them."""

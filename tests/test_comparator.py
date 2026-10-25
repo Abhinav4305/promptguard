@@ -19,19 +19,26 @@ def run(rid, status=RunStatus.COMPLETED, expected=3, error_message=None):
     return NS(id=rid, status=status, expected_cases=expected, error_message=error_message)
 
 
-def ok(ds, sim=0.9, lat=1.0, cost=0.0):
+def score(name="text_similarity", value=0.9, *, version="1", kind="similarity", config_hash="h0",
+          gating=True, status="OK"):
+    return NS(evaluator_name=name, evaluator_version=version, kind=kind, config_hash=config_hash,
+              gating=gating, status=status, score=value)
+
+
+def ok(ds, sim=0.9, lat=1.0, cost=0.0, scores=None):
     return NS(dataset_id=ds, status=ResultStatus.SUCCEEDED, error_category=None,
-              similarity_score=sim, latency_seconds=lat, token_cost=cost)
+              similarity_score=sim, latency_seconds=lat, token_cost=cost,
+              scores=scores if scores is not None else [score(value=sim)])
 
 
 def failed(ds, category=ErrorCategory.INFRASTRUCTURE):
     return NS(dataset_id=ds, status=ResultStatus.FAILED, error_category=category,
-              similarity_score=None, latency_seconds=None, token_cost=None)
+              similarity_score=None, latency_seconds=None, token_cost=None, scores=[])
 
 
 def pending(ds, status=ResultStatus.PENDING):
     return NS(dataset_id=ds, status=status, error_category=None,
-              similarity_score=None, latency_seconds=None, token_cost=None)
+              similarity_score=None, latency_seconds=None, token_cost=None, scores=[])
 
 
 BASELINE = [ok(1), ok(2), ok(3)]

@@ -8,7 +8,7 @@ import pytest
 from app.core import run_executor
 from app.db.models import EvaluationRun, ResultStatus, RunStatus
 from app.tasks import evaluation_tasks
-from tests.conftest import FakeLLM, fake_score
+from tests.conftest import FakeLLM, fake_resolver, make_resolver
 
 
 @pytest.fixture()
@@ -21,7 +21,7 @@ def wire(monkeypatch, session_factory):
         monkeypatch.setattr(
             evaluation_tasks, "execute_run",
             lambda db, run_id, final_attempt: real(
-                db, run_id, llm_fn=llm, score_fn=fake_score, final_attempt=final_attempt
+                db, run_id, llm_fn=llm, resolver=fake_resolver, final_attempt=final_attempt
             ),
         )
 

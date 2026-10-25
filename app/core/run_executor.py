@@ -18,7 +18,6 @@ Rules
 """
 
 import logging
-import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,11 +26,14 @@ from typing import Callable
 import httpx
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.evaluators import (
+    EvalInput, EvaluatorConfigError, OutcomeStatus, resolve_evaluators, run_evaluator,
+)
 from app.core.llm_gateway import call_llm
-from app.core.metrics import compute_similarity
 from app.db.models.dataset import Dataset
 from app.db.models.evaluation_result import ErrorCategory, EvaluationResult, ResultStatus
 from app.db.models.evaluation_run import EvaluationRun, RunStatus
+from app.db.models.evaluation_score import EvaluationScore, ScoreStatus
 from app.db.models.prompt import Prompt
 
 logger = logging.getLogger(__name__)
@@ -87,11 +89,43 @@ def _reset(result: EvaluationResult) -> None:
     result.token_cost = None
     result.similarity_score = None
     result.actual_output = None
+    result.scores.clear()   # delete-orphan: scores from an earlier attempt must not survive
 
 
 # --------------------------------------------------------------------------------
 # One case
 # --------------------------------------------------------------------------------
+
+def _score_case(result: EvaluationResult, dataset: Dataset, resolver: Callable) -> list[str]:
+    """
+    Run every evaluator of the case and attach one EvaluationScore per evaluator
+    (valid score or explicit ERROR). Returns the error messages, empty if all scored.
+    """
+    try:
+        resolved = resolver(dataset.eval_spec)
+    except EvaluatorConfigError as exc:
+        return [f"invalid evaluator spec: {exc}"]
+
+    case_meta = {
+        "case_key": dataset.case_key, "task_type": dataset.task_type,
+        "category": dataset.category, "difficulty": dataset.difficulty,
+    }
+    inp = EvalInput(prediction=result.actual_output or "", reference=dataset.expected_output, case=case_meta)
+    errors: list[str] = []
+    for item in resolved:
+        ev = item.evaluator
+        outcome = run_evaluator(ev, inp)
+        ok = outcome.status == OutcomeStatus.OK
+        result.scores.append(EvaluationScore(
+            evaluator_name=ev.name, evaluator_version=ev.version, kind=ev.kind.value,
+            config=ev.config, config_hash=ev.config_hash, gating=item.gating,
+            status=ScoreStatus.OK if ok else ScoreStatus.ERROR,
+            score=outcome.score, details=outcome.details, error_message=outcome.error_message,
+        ))
+        if not ok:
+            errors.append(f"{ev.name}: {outcome.error_message}")
+    return errors
+
 
 def _execute_case(
     db: Session,
@@ -99,7 +133,7 @@ def _execute_case(
     prompt: Prompt,
     result: EvaluationResult,
     llm_fn: Callable,
-    score_fn: Callable,
+    resolver: Callable,
 ) -> None:
     dataset = db.get(Dataset, result.dataset_id)
 
@@ -135,17 +169,19 @@ def _execute_case(
     result.latency_seconds = round(llm_result.latency_seconds, 4)
     result.token_cost = round(llm_result.token_cost, 8)
 
-    try:
-        score = score_fn(prediction=llm_result.output, reference=dataset.expected_output)
-        if not isinstance(score, (int, float)) or not math.isfinite(score) or not 0.0 <= score <= 1.0:
-            raise ValueError(f"score {score!r} is not a finite number in [0, 1]")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Run %s | case %s | scoring failed: %s", run_id, dataset.id, exc)
-        _fail(result, ErrorCategory.EVALUATOR_ERROR, format_error(exc))
+    errors = _score_case(result, dataset, resolver)
+    if errors:
+        # Evaluator failures are not model failures and not regressions: the case FAILED,
+        # but the model output and the scores that did succeed stay available for debugging.
+        logger.warning("Run %s | case %s | scoring failed: %s", run_id, dataset.id, errors)
+        _fail(result, ErrorCategory.EVALUATOR_ERROR, "; ".join(errors))
         db.commit()
         return
 
-    result.similarity_score = score
+    # Compatibility copy: the pre-evaluator API exposed a single similarity_score.
+    result.similarity_score = next(
+        (s.score for s in result.scores if s.evaluator_name == "text_similarity"), None
+    )
     result.status = ResultStatus.SUCCEEDED
     db.commit()
 
@@ -212,7 +248,7 @@ def execute_run(
     run_id: int,
     *,
     llm_fn: Callable = call_llm,
-    score_fn: Callable = compute_similarity,
+    resolver: Callable = resolve_evaluators,
     final_attempt: bool = True,
 ) -> ExecutionOutcome | None:
     """
@@ -256,7 +292,7 @@ def execute_run(
     for result in results:
         if result.status == ResultStatus.SUCCEEDED:
             continue  # already done in an earlier attempt: never redo, never recount
-        _execute_case(db, run_id, prompt, result, llm_fn, score_fn)
+        _execute_case(db, run_id, prompt, result, llm_fn, resolver)
 
     _recount(run, results)
     retryable = any(

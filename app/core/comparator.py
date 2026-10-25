@@ -4,18 +4,23 @@ Regression Comparator.
 Two layers:
 
 1. evaluate_comparison() / check_comparability()  — decides whether two runs may be
-   compared at all (same cases, all executed, all scored).
+   compared at all (same cases, all executed, all scored, scored by the same evaluators).
 2. compare_runs()                                 — the metric engine. Compares a
-   candidate run against a baseline run across three axes:
-     - Similarity  (higher is better  -> regression if it drops)
+   candidate run against a baseline run across:
+     - one axis PER EVALUATOR (higher is better -> regression if the mean drops
+       by more than that evaluator kind's threshold). Only GATING evaluators can fail
+       the verdict; non-gating ones are reported as advisory.
      - Latency     (lower is better   -> regression if it rises)
      - Cost        (lower is better   -> regression if it rises)
-   Each axis is evaluated independently; the verdict is FAIL if any single axis
-   exceeds its configured threshold.
+   Each axis is evaluated independently; the verdict is FAIL if any single gating
+   axis exceeds its configured threshold.
 
 COMPARISON POLICY (policy_version = POLICY_VERSION)
   * Two runs are compared only if they cover exactly the same test-case IDs, every
-    case in both runs executed successfully, and every case has all its metrics.
+    case in both runs executed successfully, every case has a valid score from every
+    evaluator (a missing, ERROR or out-of-range score is never skipped), every case has
+    at least one gating score, and both runs scored each case with the same evaluators
+    (name, version, config, gating). A changed evaluator is a different measurement.
   * Incomplete evaluations BLOCK the release: INCOMPLETE and INCOMPARABLE both give
     passed=False. They are reported as such, never as a quality regression, and
     no aggregate score or per-metric verdict is produced for them, because an
@@ -29,10 +34,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from app.core.config import settings
+from app.core.evaluators.base import MissingScoreError, aggregate, is_valid_score
 from app.db.models.evaluation_result import ErrorCategory, EvaluationResult, ResultStatus
 from app.db.models.evaluation_run import RunStatus
 
-POLICY_VERSION = "comparison-policy-v1"
+POLICY_VERSION = "comparison-policy-v2"
+TEXT_SIMILARITY = "text_similarity"
+SIMILARITY_KIND = "similarity"
 MAX_IDS_IN_MESSAGE = 10
 
 
@@ -53,15 +61,43 @@ class MetricDelta:
 
 
 @dataclass
+class EvaluatorDelta:
+    """Aggregate of one evaluator (name+version, gating or not) over the cases it scored."""
+    name: str
+    version: str
+    kind: str
+    gating: bool
+    n_cases: int
+    baseline_avg: float
+    candidate_avg: float
+    delta_absolute: float
+    delta_relative: float | None
+    threshold_used: float
+    regression_detected: bool         # only ever True for gating evaluators
+    advisory_regression: bool         # non-gating evaluator dropped past its threshold
+
+
+@dataclass
+class RegressedCase:
+    """A case where a gating score went down. Informational: the verdict uses aggregates."""
+    dataset_id: int
+    evaluator: str
+    baseline_score: float
+    candidate_score: float
+
+
+@dataclass
 class ComparisonReport:
     baseline_run_id: int
     candidate_run_id: int
-    similarity: MetricDelta
+    similarity: MetricDelta | None    # text_similarity over all cases that have it; None if none do
     latency: MetricDelta
     cost: MetricDelta
-    passed: bool                      # True only if ALL metrics pass
+    passed: bool                      # True only if ALL gating metrics pass
     summary: str
     per_dataset: list[dict] = field(default_factory=list)
+    evaluators: list[EvaluatorDelta] = field(default_factory=list)
+    regressed_cases: list[RegressedCase] = field(default_factory=list)
 
 
 @dataclass
@@ -94,13 +130,37 @@ def _fmt_ids(ids: list[int]) -> str:
     return shown + (f", … (+{len(ids) - MAX_IDS_IN_MESSAGE} more)" if len(ids) > MAX_IDS_IN_MESSAGE else "")
 
 
+def _scores_of(r) -> list:
+    return list(getattr(r, "scores", None) or [])
+
+
+def _score_ok(sc) -> bool:
+    status = getattr(sc.status, "value", sc.status)
+    return status == "OK" and is_valid_score(sc.score)
+
+
 def _is_scored(r) -> bool:
+    scores = _scores_of(r)
     return (
         r.status == ResultStatus.SUCCEEDED
-        and r.similarity_score is not None
         and r.latency_seconds is not None
         and r.token_cost is not None
+        and bool(scores)
+        and all(_score_ok(sc) for sc in scores)
     )
+
+
+def _signature(r) -> frozenset:
+    """Which evaluators scored this case, and how: what two runs must agree on."""
+    return frozenset(
+        (sc.evaluator_name, sc.evaluator_version, sc.config_hash, bool(sc.gating)) for sc in _scores_of(r)
+    )
+
+
+def _fmt_sig(sig: frozenset) -> str:
+    return ", ".join(
+        f"{n} v{v} [{h}]{'' if g else ' (advisory)'}" for n, v, h, g in sorted(sig)
+    ) or "none"
 
 
 def _check_one_run(label: str, run, results) -> list[ComparisonIssue]:
@@ -163,7 +223,21 @@ def _check_one_run(label: str, run, results) -> list[ComparisonIssue]:
         ids = sorted(r.dataset_id for r in unscored)
         issues.append(ComparisonIssue(
             "MISSING_SCORES", ComparisonStatus.INCOMPLETE, label,
-            f"{name}: {len(unscored)} succeeded case(s) are missing a score or metric: {_fmt_ids(ids)}",
+            f"{name}: {len(unscored)} succeeded case(s) have a missing, failed or invalid evaluator score "
+            f"or metric: {_fmt_ids(ids)}",
+            ids,
+        ))
+
+    ungated = [
+        r for r in results
+        if _is_scored(r) and not any(sc.gating for sc in _scores_of(r))
+    ]
+    if ungated:
+        ids = sorted(r.dataset_id for r in ungated)
+        issues.append(ComparisonIssue(
+            "NO_GATING_SCORE", ComparisonStatus.INCOMPLETE, label,
+            f"{name}: {len(ungated)} case(s) have no gating evaluator, so they could never block "
+            f"a release: {_fmt_ids(ids)}",
             ids,
         ))
     return issues
@@ -174,8 +248,9 @@ def check_comparability(baseline_run, baseline_results, candidate_run, candidate
     Return every reason the two runs must not be compared (empty list = comparable).
 
     Runs need: id, status, expected_cases, error_message.
-    Results need: dataset_id, status, error_category, similarity_score,
-                  latency_seconds, token_cost.
+    Results need: dataset_id, status, error_category, latency_seconds, token_cost and
+                  `scores` (objects with evaluator_name, evaluator_version, config_hash,
+                  gating, status, score).
     """
     issues = _check_one_run("baseline", baseline_run, baseline_results)
     issues += _check_one_run("candidate", candidate_run, candidate_results)
@@ -193,6 +268,22 @@ def check_comparability(baseline_run, baseline_results, candidate_run, candidate
             "COVERAGE_MISMATCH", ComparisonStatus.INCOMPARABLE, "both",
             "runs do not cover the same test cases (" + "; ".join(parts) + ")",
             sorted(b_ids ^ c_ids),
+        ))
+
+    # Same case must have been scored by the same evaluators in both runs. Only checked
+    # where both sides are fully scored: other problems are already reported above.
+    b_by = {r.dataset_id: r for r in baseline_results if _is_scored(r)}
+    c_by = {r.dataset_id: r for r in candidate_results if _is_scored(r)}
+    diff = sorted(d for d in b_by.keys() & c_by.keys() if _signature(b_by[d]) != _signature(c_by[d]))
+    if diff:
+        first = diff[0]
+        issues.append(ComparisonIssue(
+            "EVALUATOR_MISMATCH", ComparisonStatus.INCOMPARABLE, "both",
+            f"baseline and candidate were scored by different evaluators (or evaluator versions/configs) "
+            f"on case(s) {_fmt_ids(diff)}; e.g. case {first}: baseline [{_fmt_sig(_signature(b_by[first]))}] "
+            f"vs candidate [{_fmt_sig(_signature(c_by[first]))}]. Re-run the baseline with the current "
+            f"benchmark/evaluators.",
+            diff,
         ))
     return issues
 
@@ -273,8 +364,89 @@ def _require_comparable_inputs(baseline_results, candidate_results) -> None:
     if set(b_ids) != set(c_ids):
         raise ValueError("compare_runs received runs with different test-case coverage")
     for r in [*baseline_results, *candidate_results]:
-        if r.similarity_score is None or r.latency_seconds is None or r.token_cost is None:
+        if not _is_scored(r):
             raise ValueError(f"compare_runs received an unscored result for case {r.dataset_id}")
+        if not any(sc.gating for sc in _scores_of(r)):
+            raise ValueError(f"compare_runs received case {r.dataset_id} with no gating evaluator")
+    c_by = {r.dataset_id: r for r in candidate_results}
+    for b in baseline_results:
+        if _signature(b) != _signature(c_by[b.dataset_id]):
+            raise ValueError(f"compare_runs received different evaluators for case {b.dataset_id}")
+
+
+def _threshold_for(kind: str) -> float:
+    if kind == SIMILARITY_KIND:
+        return settings.regression_similarity_drop_threshold
+    return settings.regression_correctness_drop_threshold
+
+
+def _evaluator_deltas(baseline_results, candidate_results):
+    """Aggregate every (evaluator, version, gating) group; returns deltas and regressed cases."""
+    c_by = {r.dataset_id: r for r in candidate_results}
+    groups: dict[tuple, dict[str, list]] = {}
+    kinds: dict[tuple, str] = {}
+    for b in sorted(baseline_results, key=lambda r: r.dataset_id):
+        c = c_by[b.dataset_id]
+        c_scores = {sc.evaluator_name: sc for sc in _scores_of(c)}
+        for bs in _scores_of(b):
+            cs = c_scores[bs.evaluator_name]
+            key = (bs.evaluator_name, bs.evaluator_version, bool(bs.gating))
+            g = groups.setdefault(key, {"b": [], "c": [], "ids": []})
+            g["b"].append(bs.score)
+            g["c"].append(cs.score)
+            g["ids"].append(b.dataset_id)
+            kinds[key] = bs.kind
+
+    deltas: list[EvaluatorDelta] = []
+    regressed: list[RegressedCase] = []
+    for key in sorted(groups):
+        name, version, gating = key
+        g = groups[key]
+        try:
+            b_avg, c_avg = aggregate(g["b"]), aggregate(g["c"])
+        except MissingScoreError as exc:      # unreachable after the preflight; fail loudly if not
+            raise ValueError(f"cannot aggregate {name}: {exc}") from exc
+        b_avg, c_avg = round(b_avg, 6), round(c_avg, 6)
+        abs_d, rel_d = _delta(b_avg, c_avg)
+        threshold = _threshold_for(kinds[key])
+        dropped = rel_d is not None and rel_d < -threshold
+        deltas.append(EvaluatorDelta(
+            name=name, version=version, kind=kinds[key], gating=gating, n_cases=len(g["ids"]),
+            baseline_avg=b_avg, candidate_avg=c_avg, delta_absolute=abs_d, delta_relative=rel_d,
+            threshold_used=threshold, regression_detected=dropped and gating,
+            advisory_regression=dropped and not gating,
+        ))
+        if gating:
+            for did, bv, cv in zip(g["ids"], g["b"], g["c"]):
+                if cv < bv - 1e-9:
+                    regressed.append(RegressedCase(did, name, bv, cv))
+    regressed.sort(key=lambda x: (x.dataset_id, x.evaluator))
+    return deltas, regressed
+
+
+def _similarity_delta(baseline_results, candidate_results, deltas) -> MetricDelta | None:
+    def sims(results):
+        out = []
+        for r in results:
+            for sc in _scores_of(r):
+                if sc.evaluator_name == TEXT_SIMILARITY:
+                    out.append(sc.score)
+        return out
+
+    b, c = sims(baseline_results), sims(candidate_results)
+    if not b or not c:
+        return None
+    b_avg, c_avg = round(aggregate(b), 6), round(aggregate(c), 6)
+    abs_d, rel_d = _delta(b_avg, c_avg)
+    return MetricDelta(
+        baseline_avg=b_avg, candidate_avg=c_avg, delta_absolute=abs_d, delta_relative=rel_d,
+        regression_detected=any(d.regression_detected for d in deltas if d.name == TEXT_SIMILARITY),
+        threshold_used=settings.regression_similarity_drop_threshold,
+    )
+
+
+def _text_similarity(r) -> float | None:
+    return next((sc.score for sc in _scores_of(r) if sc.evaluator_name == TEXT_SIMILARITY), None)
 
 
 def compare_runs(
@@ -289,37 +461,25 @@ def compare_runs(
     """
     _require_comparable_inputs(baseline_results, candidate_results)
 
-    # ── Aggregate averages ───────────────────────────────────────────────────
-    b_sim = _avg([r.similarity_score for r in baseline_results])
-    c_sim = _avg([r.similarity_score for r in candidate_results])
+    # ── Per-evaluator aggregates ─────────────────────────────────────────────
+    ev_deltas, regressed_cases = _evaluator_deltas(baseline_results, candidate_results)
+    similarity = _similarity_delta(baseline_results, candidate_results, ev_deltas)
+
+    # ── Latency and cost ─────────────────────────────────────────────────────
     b_lat = _avg([r.latency_seconds for r in baseline_results])
     c_lat = _avg([r.latency_seconds for r in candidate_results])
     b_cost = _avg([r.token_cost for r in baseline_results])
     c_cost = _avg([r.token_cost for r in candidate_results])
-
-    # ── Compute deltas ───────────────────────────────────────────────────────
-    sim_abs, sim_rel = _delta(b_sim, c_sim)
     lat_abs, lat_rel = _delta(b_lat, c_lat)
     cost_abs, cost_rel = _delta(b_cost, c_cost)
 
-    # ── Evaluate thresholds ──────────────────────────────────────────────────
-    # Similarity regression: candidate drops MORE than threshold below baseline
-    sim_regressed = (
-        sim_rel is not None
-        and sim_rel < -settings.regression_similarity_drop_threshold
-    )
     # Latency regression: candidate rises MORE than threshold above baseline
-    lat_regressed = (
-        lat_rel is not None
-        and lat_rel > settings.regression_latency_spike_threshold
-    )
+    lat_regressed = lat_rel is not None and lat_rel > settings.regression_latency_spike_threshold
     # Cost regression: candidate rises MORE than threshold above baseline
-    cost_regressed = (
-        cost_rel is not None
-        and cost_rel > settings.regression_cost_spike_threshold
-    )
+    cost_regressed = cost_rel is not None and cost_rel > settings.regression_cost_spike_threshold
+    quality_regressed = any(d.regression_detected for d in ev_deltas)
 
-    passed = not any([sim_regressed, lat_regressed, cost_regressed])
+    passed = not (quality_regressed or lat_regressed or cost_regressed)
 
     # ── Per-dataset breakdown (useful for PR comments) ───────────────────────
     # Coverage is identical on both sides (checked above), so no case is skipped.
@@ -327,26 +487,39 @@ def compare_runs(
     per_dataset = []
     for c_result in candidate_results:
         b_result = baseline_by_dataset[c_result.dataset_id]
-        row_sim_abs, row_sim_rel = _delta(b_result.similarity_score, c_result.similarity_score)
+        b_sim, c_sim = _text_similarity(b_result), _text_similarity(c_result)
+        row_sim_abs, row_sim_rel = _delta(b_sim, c_sim)
         row_lat_abs, _ = _delta(b_result.latency_seconds, c_result.latency_seconds)
+        b_scores = {sc.evaluator_name: sc for sc in _scores_of(b_result)}
+        scores = {}
+        for sc in _scores_of(c_result):
+            bs = b_scores[sc.evaluator_name]
+            scores[sc.evaluator_name] = {
+                "baseline": bs.score, "candidate": sc.score,
+                "delta": round(sc.score - bs.score, 6), "gating": bool(sc.gating),
+                "kind": sc.kind, "version": sc.evaluator_version,
+            }
         per_dataset.append({
             "dataset_id": c_result.dataset_id,
-            "baseline_similarity": b_result.similarity_score,
-            "candidate_similarity": c_result.similarity_score,
+            "baseline_similarity": b_sim,
+            "candidate_similarity": c_sim,
             "similarity_delta": row_sim_abs,
             "similarity_delta_pct": round(row_sim_rel * 100, 2) if row_sim_rel is not None else None,
             "baseline_latency_s": b_result.latency_seconds,
             "candidate_latency_s": c_result.latency_seconds,
             "latency_delta_s": row_lat_abs,
+            "scores": scores,
         })
 
     # ── Human-readable summary ───────────────────────────────────────────────
     flags = []
-    if sim_regressed:
-        flags.append(
-            f"similarity dropped {abs(sim_rel)*100:.1f}% "
-            f"(threshold {settings.regression_similarity_drop_threshold*100:.0f}%)"
-        )
+    for d in ev_deltas:
+        if d.regression_detected:
+            label = "similarity" if d.name == TEXT_SIMILARITY else d.name
+            flags.append(
+                f"{label} dropped {abs(d.delta_relative)*100:.1f}% "
+                f"(threshold {d.threshold_used*100:.0f}%)"
+            )
     if lat_regressed:
         flags.append(
             f"latency increased {lat_rel*100:.1f}% "
@@ -358,36 +531,35 @@ def compare_runs(
             f"(threshold {settings.regression_cost_spike_threshold*100:.0f}%)"
         )
 
-    summary = "✅ No regressions detected." if passed else "❌ Regressions: " + "; ".join(flags)
+    if passed:
+        summary = "✅ No regressions detected."
+        notes = []
+        if regressed_cases:
+            n = len({x.dataset_id for x in regressed_cases})
+            notes.append(f"{n} case(s) scored lower on a gating evaluator but the change is within threshold")
+        advisory = [d.name for d in ev_deltas if d.advisory_regression]
+        if advisory:
+            notes.append(f"advisory (non-gating) drop in {', '.join(sorted(set(advisory)))}")
+        if notes:
+            summary += " Note: " + "; ".join(notes) + "."
+    else:
+        summary = "❌ Regressions: " + "; ".join(flags)
 
     return ComparisonReport(
         baseline_run_id=baseline_run_id,
         candidate_run_id=candidate_run_id,
-        similarity=MetricDelta(
-            baseline_avg=b_sim,
-            candidate_avg=c_sim,
-            delta_absolute=sim_abs,
-            delta_relative=sim_rel,
-            regression_detected=sim_regressed,
-            threshold_used=settings.regression_similarity_drop_threshold,
-        ),
+        similarity=similarity,
         latency=MetricDelta(
-            baseline_avg=b_lat,
-            candidate_avg=c_lat,
-            delta_absolute=lat_abs,
-            delta_relative=lat_rel,
-            regression_detected=lat_regressed,
-            threshold_used=settings.regression_latency_spike_threshold,
+            baseline_avg=b_lat, candidate_avg=c_lat, delta_absolute=lat_abs, delta_relative=lat_rel,
+            regression_detected=lat_regressed, threshold_used=settings.regression_latency_spike_threshold,
         ),
         cost=MetricDelta(
-            baseline_avg=b_cost,
-            candidate_avg=c_cost,
-            delta_absolute=cost_abs,
-            delta_relative=cost_rel,
-            regression_detected=cost_regressed,
-            threshold_used=settings.regression_cost_spike_threshold,
+            baseline_avg=b_cost, candidate_avg=c_cost, delta_absolute=cost_abs, delta_relative=cost_rel,
+            regression_detected=cost_regressed, threshold_used=settings.regression_cost_spike_threshold,
         ),
         passed=passed,
         summary=summary,
         per_dataset=per_dataset,
+        evaluators=ev_deltas,
+        regressed_cases=regressed_cases,
     )
