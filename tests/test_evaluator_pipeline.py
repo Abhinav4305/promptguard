@@ -299,3 +299,51 @@ def test_correctness_and_similarity_use_their_own_thresholds(monkeypatch):
     assert compare([case(i, 1.0) for i in range(1, 5)], cand).passed is True
     monkeypatch.setattr(settings, "regression_correctness_drop_threshold", 0.10)
     assert compare([case(i, 1.0) for i in range(1, 5)], cand).passed is False
+
+
+# ── quality: the single headline number ─────────────────────────────────────────────────
+
+def test_quality_is_the_mean_of_gating_scores_and_ignores_advisory_ones():
+    base = [case(i, 1.0, sim=0.9) for i in range(1, 5)]
+    cand = [case(1, 1.0, sim=0.1), case(2, 1.0, sim=0.1), case(3, 0.0, sim=0.1), case(4, 1.0, sim=0.1)]
+    out = compare(base, cand)
+    q = out.report.quality
+    assert (q.baseline_avg, q.candidate_avg) == (1.0, 0.75)        # similarity (advisory) does not enter
+    assert q.regression_detected and out.passed is False
+    row = next(r for r in out.report.per_dataset if r["dataset_id"] == 3)
+    assert (row["baseline_quality"], row["candidate_quality"], row["quality_delta_pct"]) == (1.0, 0.0, -100.0)
+
+
+def test_quality_flag_follows_the_per_check_verdict_not_the_overall_mean():
+    # json-style small group collapses, large group is untouched: the overall mean moves ~5% only.
+    def big(i, v=1.0):
+        return ok(i, 0.9, scores=[score("contains", v, kind="correctness", config_hash="c0")])
+
+    def small(i, v):
+        return ok(i, 0.9, scores=[score("json_schema", v, kind="correctness", config_hash="s0")])
+
+    base = [big(i) for i in range(1, 20)] + [small(20, 1.0)]
+    cand = [big(i) for i in range(1, 20)] + [small(20, 0.0)]
+    out = compare(base, cand)
+    assert out.report.quality.delta_relative == -0.05            # overall mean barely moved...
+    assert out.report.quality.regression_detected and out.passed is False   # ...but the check regressed
+
+
+def test_api_exposes_quality_and_the_dashboard_has_three_headline_cards(client, db, seed):
+    base, cand = two_runs(db, seed, "The capital is Paris.", "The capital is Lyon.")
+    body = client.get("/evaluations/compare", params={"baseline_run_id": base.id, "candidate_run_id": cand.id}).json()
+    assert body["quality"]["baseline_avg"] == 1.0 and body["quality"]["candidate_avg"] == 0.0
+    assert body["quality"]["regression_detected"] is True
+
+    html = client.get("/dashboard/compare", params={"baseline_run_id": base.id, "candidate_run_id": cand.id}).text
+    assert html.count('class="metric-card"') == 3                 # Quality, Latency, Cost
+    for label in ("Quality", "Latency", "Cost"):
+        assert f'<p class="metric-label">{label}</p>' in html
+    assert "<details" in html and "Quality checks (2)" in html     # per-check detail is collapsed, not removed
+
+
+def test_dashboard_lists_only_changed_checks_per_question(client, db, seed):
+    base, cand = two_runs(db, seed, "The capital is Paris.", "The capital is Paris, really.")
+    html = client.get("/dashboard/compare", params={"baseline_run_id": base.id, "candidate_run_id": cand.id}).text
+    assert 'class="score-line"' in html                            # text similarity changed slightly
+    assert "contains: 1.00" not in html                            # unchanged correctness check is not repeated

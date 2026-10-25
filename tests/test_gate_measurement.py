@@ -11,18 +11,26 @@ from app.core.evaluators import EvalInput, EvaluatorKind, resolve_evaluators, ru
 from app.core.gate_measurement import format_markdown, measure
 
 ROOT = Path(__file__).resolve().parent.parent
-BENCH = ROOT / "benchmarks" / "core-v1.yaml"
-SIM = ROOT / "benchmarks" / "simulations" / "core-v1.sim.yaml"
+PAIRS = {
+    "v1": (ROOT / "benchmarks" / "core-v1.yaml", ROOT / "benchmarks" / "simulations" / "core-v1.sim.yaml"),
+    "v2": (ROOT / "benchmarks" / "core-v2.yaml", ROOT / "benchmarks" / "simulations" / "core-v2.sim.yaml"),
+}
+BENCH, SIM = PAIRS["v2"]                       # the benchmark CI uses; the measurement runs on it
+
+
+@pytest.fixture(scope="module", params=sorted(PAIRS))
+def cases(request):
+    return {c["case_key"]: c for c in yaml.safe_load(PAIRS[request.param][0].read_text(encoding="utf-8"))["cases"]}
 
 
 @pytest.fixture(scope="module")
-def cases():
-    return {c["case_key"]: c for c in yaml.safe_load(BENCH.read_text(encoding="utf-8"))["cases"]}
-
-
-@pytest.fixture(scope="module")
-def sim():
-    return yaml.safe_load(SIM.read_text(encoding="utf-8"))
+def sim(request, cases):
+    # the simulation file that goes with whichever benchmark version `cases` loaded
+    for name, (bench_path, sim_path) in PAIRS.items():
+        keys = {c["case_key"] for c in yaml.safe_load(bench_path.read_text(encoding="utf-8"))["cases"]}
+        if keys == set(cases):
+            return yaml.safe_load(sim_path.read_text(encoding="utf-8"))
+    raise AssertionError("no simulation file matches the benchmark")
 
 
 def correctness_scores(case, answer):
@@ -86,7 +94,8 @@ def test_old_similarity_gate_has_the_blind_spots_the_new_gate_closes(report, sui
     assert h["false_blocks_on_acceptable_changes"]["old_similarity_only"]["rate"] > 0.5   # paraphrases look like regressions
     assert h["detection_of_regressions"]["old_similarity_only"]["rate"] < 1.0
     by = s["by_scenario_type"]
-    assert by["wrong_close@25%"]["old_blocked"] == 0 and by["wrong_close@25%"]["new_blocked"] == by["wrong_close@25%"]["of"]
+    wc = by["wrong_close@25%"]
+    assert wc["new_blocked"] == wc["of"] and wc["old_blocked"] < wc["of"]      # similarity misses some close-but-wrong answers
     assert by["format_break"]["old_blocked"] == 0 and by["format_break"]["new_blocked"] == 1
 
 

@@ -13,12 +13,14 @@ from app.db.session import get_db
 from app.main import app
 from app.schemas.dataset import BenchmarkImport
 
-BENCH_PATH = Path(__file__).resolve().parent.parent / "benchmarks" / "core-v1.yaml"
+BENCH_DIR = Path(__file__).resolve().parent.parent / "benchmarks"
+V1_PATH, V2_PATH = BENCH_DIR / "core-v1.yaml", BENCH_DIR / "core-v2.yaml"
 
 
-@pytest.fixture(scope="module")
-def bench():
-    return yaml.safe_load(BENCH_PATH.read_text(encoding="utf-8"))
+@pytest.fixture(scope="module", params=[V1_PATH, V2_PATH], ids=["core-v1", "core-v2"])
+def bench(request):
+    """Every shipped benchmark version must satisfy the same integrity tests."""
+    return yaml.safe_load(request.param.read_text(encoding="utf-8"))
 
 
 @pytest.fixture()
@@ -39,14 +41,14 @@ def client(session_factory):
 
 def test_core_benchmark_file_is_valid(bench):
     parsed = BenchmarkImport.model_validate(bench)       # keys unique, enums valid, evaluators instantiate
-    assert (parsed.benchmark, parsed.version) == ("core", "1")
-    assert 30 <= len(parsed.cases) <= 60
+    assert parsed.benchmark == "core" and parsed.version in {"1", "2"}
+    assert 30 <= len(parsed.cases) <= 120
 
 
 def test_core_benchmark_has_a_small_pr_suite_and_covers_the_planned_categories(bench):
     cases = bench["cases"]
     pr = [c for c in cases if "pr" in c["suites"]]
-    assert 8 <= len(pr) <= 15 and len(pr) < len(cases) / 2
+    assert 8 <= len(pr) <= 20 and len(pr) < len(cases) / 2
     assert all("full" in c["suites"] for c in cases)
     assert {c["category"] for c in cases} == CATEGORIES
     assert {"structured_output", "classification", "qa"} <= {c["task_type"] for c in cases}
@@ -188,3 +190,25 @@ def test_content_hash_depends_on_every_defining_field():
     for field, value in [("input_query", "q2"), ("expected_output", "a2"), ("eval_spec", [{"name": "contains"}]),
                          ("task_type", "extraction"), ("category", "edge"), ("difficulty", "hard"), ("suites", ["full"])]:
         assert case_content_hash(**{**base, field: value}) != h, field
+
+
+def test_v2_contains_every_v1_case_unchanged_plus_new_ones():
+    """v1 is published and immutable: v2 may only add cases, never alter or drop one."""
+    v1 = yaml.safe_load(V1_PATH.read_text(encoding="utf-8"))["cases"]
+    v2 = yaml.safe_load(V2_PATH.read_text(encoding="utf-8"))["cases"]
+    assert v2[:len(v1)] == v1
+    new = v2[len(v1):]
+    assert len(new) >= 20 and not {c["case_key"] for c in new} & {c["case_key"] for c in v1}
+
+
+def test_v2_new_cases_cover_the_planned_edge_areas():
+    v2 = {c["case_key"]: c for c in yaml.safe_load(V2_PATH.read_text(encoding="utf-8"))["cases"]}
+    for key in ("edge-whitespace-input-001", "edge-emoji-input-001", "lang-japanese-001", "inject-in-review-001",
+                "num-thousands-sep-001", "reason-letter-count-001", "premise-great-wall-001", "safety-refusal-001",
+                "cls-sarcasm-001", "long-needle-code-001", "json-null-field-001", "json-empty-array-001"):
+        assert key in v2, key
+    # CJK text has no word boundaries, so whole-word matching must be off for it
+    ja = next(e for e in v2["lang-japanese-001"]["eval_spec"] if e["name"] == "contains")
+    assert ja["config"]["whole_word"] is False
+    # the ROUGE tokenizer drops non-ASCII text: the Japanese case must not carry a meaningless similarity score
+    assert all(e["name"] != "text_similarity" for e in v2["lang-japanese-001"]["eval_spec"])

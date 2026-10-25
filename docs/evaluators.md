@@ -53,6 +53,10 @@ The decision is stored on every score row (`gating`), so history stays interpret
 
 ## How runs are compared
 
+The dashboard and the API's `quality` field show one headline number: the mean of each question's gating scores,
+averaged over questions. The verdict itself is decided per check, as below; `quality.regression_detected` is true when
+any gating check regressed, even if the overall mean moved less than the threshold.
+
 Per evaluator (name + version + gating), over the cases it scored, the comparator computes the mean for baseline and
 candidate. A gating evaluator **fails the verdict** when its mean drops by more than its threshold relative to the
 baseline: `REGRESSION_SIMILARITY_DROP_THRESHOLD` for similarity evaluators, `REGRESSION_CORRECTNESS_DROP_THRESHOLD`
