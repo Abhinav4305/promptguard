@@ -97,6 +97,41 @@ All thresholds are configurable via environment variables.
 
 ---
 
+## Run Statuses and Comparison Policy
+
+An evaluation run is **COMPLETED only if every test case executed successfully**. COMPLETED describes execution, never quality; quality verdicts only exist in a comparison.
+
+| Run status | Meaning |
+|---|---|
+| `PENDING` / `RUNNING` | Queued / executing (a run stays `RUNNING` between retry attempts) |
+| `COMPLETED` | All expected cases succeeded (`failed_cases == 0`) |
+| `PARTIAL` | Some cases failed. Results are kept for debugging; the run cannot be a baseline |
+| `FAILED` | No case succeeded, or the run could not start |
+
+Each case has its own `status` (`PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`). A failed case records an `error_category` and `error_message`: `INFRASTRUCTURE` (timeout, connection, HTTP 5xx/429; retried), `MODEL_ERROR` (request rejected or malformed reply), `EVALUATOR_ERROR` (scoring failed; the model output is kept) or `UNKNOWN`. Quality regressions are never an error category.
+
+`GET /evaluations/compare` first checks the two runs are comparable and returns a `comparison_status`:
+
+| `comparison_status` | Meaning | `passed` |
+|---|---|---|
+| `OK` | Same cases, all executed and scored. `passed` is the threshold verdict | per thresholds |
+| `INCOMPLETE` | A run has failed, unfinished or unscored cases | always `false` |
+| `INCOMPARABLE` | The runs do not cover the same case IDs, or contain duplicates | always `false` |
+
+**Policy (`comparison-policy-v1`): incomplete or incomparable evaluations block the release.** No aggregate score is reported for them, because an average over a subset of cases is not a measurement of the benchmark. `issues` lists exactly which cases and why.
+
+## Migrations and Tests
+
+The schema is managed by Alembic (`alembic/versions/`); the API applies pending migrations at startup. A database created by an older version (no `alembic_version` table) is stamped at the baseline revision and then upgraded, which also corrects old runs that were recorded as COMPLETED despite failed cases (they become `PARTIAL`/`FAILED`).
+
+```bash
+pip install -r requirements-dev.txt
+pytest                                   # unit + API + migration tests on SQLite, no services needed
+TEST_POSTGRES_URL=postgresql://user:pass@localhost:5432/scratch pytest tests/test_migrations.py   # also runs the Postgres tests (WIPES that database's public schema)
+```
+
+---
+
 ## Getting Started
 
 ### Prerequisites

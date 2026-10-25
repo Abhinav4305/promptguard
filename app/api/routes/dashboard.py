@@ -5,22 +5,59 @@ Serves a single HTML page at GET /dashboard/compare?baseline_run_id=X&candidate_
 that renders the same data as /evaluations/compare, but as bar charts and
 per-question breakdowns instead of raw JSON.
 
+If the two runs cannot be validly compared (failed, unfinished or mismatched cases)
+the page says so, lists the reasons and the failed cases, and shows NO quality
+verdict, mirroring the comparison_status of the JSON endpoint.
+
 No new dependencies — uses Chart.js from a CDN inside the returned HTML string.
+Everything that comes from the database or the model is HTML-escaped.
 """
 
+import json
 from dataclasses import asdict
+from html import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
-from app.core.comparator import compare_runs
+from app.core.comparator import ComparisonOutcome, evaluate_comparison
 from app.db.models.dataset import Dataset
-from app.db.models.evaluation_result import EvaluationResult
+from app.db.models.evaluation_result import EvaluationResult, ResultStatus
 from app.db.models.evaluation_run import EvaluationRun, RunStatus
 from app.db.session import get_db
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+def _css(verdict_color: str, verdict_bg: str) -> str:
+    return f"""
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #F1EFE8; color: #2C2C2A; max-width: 880px; margin: 0 auto; padding: 32px 20px 80px; }}
+  h1 {{ font-size: 20px; font-weight: 500; margin: 0 0 4px; }}
+  .subtitle {{ font-size: 14px; color: #5F5E5A; margin: 0 0 24px; }}
+  .verdict {{ display: flex; align-items: center; gap: 10px; background: {verdict_bg}; color: {verdict_color}; padding: 14px 18px; border-radius: 10px; font-size: 15px; font-weight: 500; margin-bottom: 24px; }}
+  .verdict-icon {{ width: 24px; height: 24px; border-radius: 50%; background: {verdict_color}; color: white; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }}
+  .metrics-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 32px; }}
+  .metric-card {{ background: white; border-radius: 10px; padding: 16px; border: 0.5px solid #D3D1C7; }}
+  .metric-label {{ font-size: 12px; color: #888780; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.03em; }}
+  .metric-row {{ display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }}
+  .metric-val-old {{ font-size: 14px; color: #888780; text-decoration: line-through; }}
+  .metric-arrow {{ font-size: 14px; color: #B4B2A9; }}
+  .metric-val-new {{ font-size: 18px; font-weight: 500; }}
+  .metric-delta {{ font-size: 13px; margin: 6px 0 0; font-weight: 500; }}
+  .chart-card {{ background: white; border-radius: 10px; padding: 20px; border: 0.5px solid #D3D1C7; margin-bottom: 32px; }}
+  .chart-title {{ font-size: 14px; font-weight: 500; margin: 0 0 16px; }}
+  .section-title {{ font-size: 14px; font-weight: 500; color: #5F5E5A; margin: 0 0 12px; }}
+  .q-card {{ background: white; border-radius: 10px; padding: 16px 18px; border: 0.5px solid #D3D1C7; margin-bottom: 10px; }}
+  .q-head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 12px; }}
+  .q-text {{ font-size: 14px; font-weight: 500; }}
+  .q-delta {{ font-size: 13px; font-weight: 500; white-space: nowrap; }}
+  .q-answer-label {{ font-size: 11px; color: #888780; text-transform: uppercase; letter-spacing: 0.03em; margin: 8px 0 2px; }}
+  .q-answer {{ font-size: 13px; color: #444441; margin: 0; line-height: 1.5; background: #F1EFE8; padding: 8px 10px; border-radius: 6px; }}
+  .issue {{ background: white; border-radius: 10px; padding: 12px 16px; border: 0.5px solid #D3D1C7; margin-bottom: 8px; font-size: 13px; line-height: 1.5; }}
+  .issue-code {{ font-size: 11px; color: #888780; text-transform: uppercase; letter-spacing: 0.03em; }}
+  .run-stats {{ font-size: 13px; color: #5F5E5A; margin: 0 0 16px; }}
+"""
 
 
 def _render_dashboard_html(
@@ -66,7 +103,7 @@ def _render_dashboard_html(
         """
 
     rows_html = ""
-    labels_json = []
+    labels = []
     baseline_json = []
     candidate_json = []
     for row in rows:
@@ -76,21 +113,25 @@ def _render_dashboard_html(
         delta_str = f"{delta_pct:+.1f}%" if delta_pct is not None else "—"
         worse = delta_pct is not None and delta_pct < -5
         delta_color = "#D85A30" if worse else "#5F5E5A"
-        labels_json.append(row["question"][:40])
+        labels.append(row["question"][:40])
         baseline_json.append(round(b * 100, 1))
         candidate_json.append(round(c * 100, 1))
         rows_html += f"""
         <div class="q-card">
           <div class="q-head">
-            <span class="q-text">{row['question']}</span>
+            <span class="q-text">{escape(row['question'])}</span>
             <span class="q-delta" style="color:{delta_color}">{delta_str}</span>
           </div>
           <p class="q-answer-label">baseline answer</p>
-          <p class="q-answer">{row['baseline_output']}</p>
+          <p class="q-answer">{escape(row['baseline_output'])}</p>
           <p class="q-answer-label">candidate answer</p>
-          <p class="q-answer">{row['candidate_output']}</p>
+          <p class="q-answer">{escape(row['candidate_output'])}</p>
         </div>
         """
+
+    # json.dumps gives valid JS. Every "<" becomes < (still the same string in JS) so
+    # a question can neither close the script block nor open a new tag inside it.
+    labels_json = json.dumps(labels).replace("<", "\\u003c")
 
     return f"""<!DOCTYPE html>
 <html>
@@ -98,30 +139,7 @@ def _render_dashboard_html(
 <meta charset="utf-8">
 <title>PromptGuard - Run {baseline_run_id} vs {candidate_run_id}</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-<style>
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #F1EFE8; color: #2C2C2A; max-width: 880px; margin: 0 auto; padding: 32px 20px 80px; }}
-  h1 {{ font-size: 20px; font-weight: 500; margin: 0 0 4px; }}
-  .subtitle {{ font-size: 14px; color: #5F5E5A; margin: 0 0 24px; }}
-  .verdict {{ display: flex; align-items: center; gap: 10px; background: {verdict_bg}; color: {verdict_color}; padding: 14px 18px; border-radius: 10px; font-size: 15px; font-weight: 500; margin-bottom: 24px; }}
-  .verdict-icon {{ width: 24px; height: 24px; border-radius: 50%; background: {verdict_color}; color: white; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }}
-  .metrics-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 32px; }}
-  .metric-card {{ background: white; border-radius: 10px; padding: 16px; border: 0.5px solid #D3D1C7; }}
-  .metric-label {{ font-size: 12px; color: #888780; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.03em; }}
-  .metric-row {{ display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }}
-  .metric-val-old {{ font-size: 14px; color: #888780; text-decoration: line-through; }}
-  .metric-arrow {{ font-size: 14px; color: #B4B2A9; }}
-  .metric-val-new {{ font-size: 18px; font-weight: 500; }}
-  .metric-delta {{ font-size: 13px; margin: 6px 0 0; font-weight: 500; }}
-  .chart-card {{ background: white; border-radius: 10px; padding: 20px; border: 0.5px solid #D3D1C7; margin-bottom: 32px; }}
-  .chart-title {{ font-size: 14px; font-weight: 500; margin: 0 0 16px; }}
-  .section-title {{ font-size: 14px; font-weight: 500; color: #5F5E5A; margin: 0 0 12px; }}
-  .q-card {{ background: white; border-radius: 10px; padding: 16px 18px; border: 0.5px solid #D3D1C7; margin-bottom: 10px; }}
-  .q-head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 12px; }}
-  .q-text {{ font-size: 14px; font-weight: 500; }}
-  .q-delta {{ font-size: 13px; font-weight: 500; white-space: nowrap; }}
-  .q-answer-label {{ font-size: 11px; color: #888780; text-transform: uppercase; letter-spacing: 0.03em; margin: 8px 0 2px; }}
-  .q-answer {{ font-size: 13px; color: #444441; margin: 0; line-height: 1.5; background: #F1EFE8; padding: 8px 10px; border-radius: 6px; }}
-</style>
+<style>{_css(verdict_color, verdict_bg)}</style>
 </head>
 <body>
 
@@ -130,7 +148,7 @@ def _render_dashboard_html(
 
   <div class="verdict">
     <span class="verdict-icon">{verdict_letter}</span>
-    <span>{summary}</span>
+    <span>{escape(summary)}</span>
   </div>
 
   <div class="metrics-grid">
@@ -180,6 +198,65 @@ def _render_dashboard_html(
 </html>"""
 
 
+def _render_invalid_html(
+    outcome: ComparisonOutcome,
+    runs: dict[str, EvaluationRun],
+    failed_cases: list[dict],
+) -> str:
+    """Shown instead of the verdict when the runs cannot be validly compared."""
+    issues_html = "".join(
+        f"""<div class="issue"><span class="issue-code">{escape(i.severity.value)} · {escape(i.code)} · {escape(i.run)}</span><br>{escape(i.message)}</div>"""
+        for i in outcome.issues
+    )
+
+    stats_html = "".join(
+        f"""<p class="run-stats"><b>{label} run #{run.id}</b> — status {escape(run.status.value)}: """
+        f"""{run.succeeded_cases} succeeded, {run.failed_cases} failed of {run.expected_cases} expected"""
+        f"""{(' — ' + escape(run.error_message)) if run.error_message else ''}</p>"""
+        for label, run in runs.items()
+    )
+
+    failed_html = "".join(
+        f"""
+        <div class="q-card">
+          <div class="q-head">
+            <span class="q-text">{escape(c['question'])}</span>
+            <span class="q-delta" style="color:#D85A30">{escape(c['run'])} · {escape(c['category'])}</span>
+          </div>
+          <p class="q-answer">{escape(c['message'])}</p>
+        </div>"""
+        for c in failed_cases
+    )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PromptGuard - Run {outcome.baseline_run_id} vs {outcome.candidate_run_id}</title>
+<style>{_css("#B26A00", "#FDF1DC")}</style>
+</head>
+<body>
+
+  <h1>Prompt comparison</h1>
+  <p class="subtitle">Baseline run #{outcome.baseline_run_id} vs candidate run #{outcome.candidate_run_id}</p>
+
+  <div class="verdict">
+    <span class="verdict-icon">!</span>
+    <span>Evaluation {escape(outcome.status.value)} — no quality verdict. Release gate: BLOCKED (policy {escape(outcome.policy_version)}).</span>
+  </div>
+
+  {stats_html}
+
+  <p class="section-title">Why the runs cannot be compared</p>
+  {issues_html}
+
+  <p class="section-title" style="margin-top:24px">Failed cases</p>
+  {failed_html or '<p class="run-stats">No individual case failures were recorded.</p>'}
+
+</body>
+</html>"""
+
+
 @router.get("/compare", response_class=HTMLResponse)
 def dashboard_compare(
     baseline_run_id: int = Query(...),
@@ -195,48 +272,64 @@ def dashboard_compare(
 
     if not baseline_run or not candidate_run:
         raise HTTPException(status_code=404, detail="One or both runs not found")
-    if baseline_run.status != RunStatus.COMPLETED or candidate_run.status != RunStatus.COMPLETED:
-        raise HTTPException(status_code=422, detail="Both runs must be COMPLETED")
+    if any(r.status in (RunStatus.PENDING, RunStatus.RUNNING) for r in (baseline_run, candidate_run)):
+        raise HTTPException(status_code=422, detail="Both runs must be finished (not PENDING or RUNNING)")
 
+    # ALL rows, including failed/unfinished ones, so the preflight sees them.
     baseline_results = (
         db.query(EvaluationResult)
-        .filter(EvaluationResult.run_id == baseline_run_id, EvaluationResult.similarity_score.is_not(None))
+        .filter(EvaluationResult.run_id == baseline_run_id)
+        .order_by(EvaluationResult.dataset_id)
         .all()
     )
     candidate_results = (
         db.query(EvaluationResult)
-        .filter(EvaluationResult.run_id == candidate_run_id, EvaluationResult.similarity_score.is_not(None))
+        .filter(EvaluationResult.run_id == candidate_run_id)
+        .order_by(EvaluationResult.dataset_id)
         .all()
     )
 
-    if not baseline_results or not candidate_results:
-        raise HTTPException(status_code=422, detail="Both runs need completed result rows")
-
-    report = compare_runs(
-        baseline_results=baseline_results,
-        candidate_results=candidate_results,
-        baseline_run_id=baseline_run_id,
-        candidate_run_id=candidate_run_id,
-    )
+    outcome = evaluate_comparison(baseline_run, baseline_results, candidate_run, candidate_results)
 
     dataset_ids = {r.dataset_id for r in baseline_results} | {r.dataset_id for r in candidate_results}
     datasets = {d.id: d for d in db.query(Dataset).filter(Dataset.id.in_(dataset_ids)).all()}
+
+    def question(did: int) -> str:
+        ds = datasets.get(did)
+        return ds.input_query if ds else f"Dataset #{did}"
+
+    if outcome.report is None:
+        failed_cases = [
+            {
+                "run": label,
+                "question": question(r.dataset_id),
+                "category": (r.error_category.value if r.error_category else r.status.value),
+                "message": r.error_message or f"case is {r.status.value}",
+            }
+            for label, results in (("baseline", baseline_results), ("candidate", candidate_results))
+            for r in results
+            if r.status != ResultStatus.SUCCEEDED
+        ]
+        html = _render_invalid_html(
+            outcome,
+            runs={"Baseline": baseline_run, "Candidate": candidate_run},
+            failed_cases=failed_cases,
+        )
+        return HTMLResponse(content=html)
+
+    report = outcome.report
     candidate_by_dataset = {r.dataset_id: r for r in candidate_results}
     baseline_by_dataset = {r.dataset_id: r for r in baseline_results}
 
     rows = []
     for did in sorted(dataset_ids):
-        b = baseline_by_dataset.get(did)
-        c = candidate_by_dataset.get(did)
-        if not b or not c:
-            continue
-        ds = datasets.get(did)
+        b = baseline_by_dataset[did]   # coverage is identical on both sides (preflight)
+        c = candidate_by_dataset[did]
         rows.append({
-            "question": ds.input_query if ds else f"Dataset #{did}",
+            "question": question(did),
             "baseline_similarity": b.similarity_score,
             "candidate_similarity": c.similarity_score,
-            "similarity_delta_pct": round((c.similarity_score - b.similarity_score) * 100, 1)
-                if b.similarity_score is not None and c.similarity_score is not None else None,
+            "similarity_delta_pct": round((c.similarity_score - b.similarity_score) * 100, 1),
             "baseline_output": (b.actual_output or "")[:300],
             "candidate_output": (c.actual_output or "")[:300],
         })
