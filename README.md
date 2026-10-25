@@ -14,10 +14,11 @@ When you tweak a prompt, swap an LLM model, or adjust generation settings, there
 
 - Stores **versioned prompts** and **test datasets** in a database
 - Runs **asynchronous evaluations** through a Celery task queue, calling the LLM for every test question and recording the actual response
-- Scores each response against expected output using **ROUGE-L** and **Levenshtein similarity** — no LLM-as-judge, no API costs for evaluation itself
+- Scores each response with **pluggable, versioned evaluators**: objective checks (exact match, required/forbidden terms, JSON schema validity, JSON equality) plus the original **ROUGE-L / Levenshtein similarity**. Correctness checks gate a release; similarity is an indicator next to them. No LLM-as-judge yet (see [docs/evaluators.md](docs/evaluators.md))
 - Captures **latency** and **token cost** per call
-- Compares a new run against a **baseline run** across all three axes and applies configurable thresholds to produce a pass/fail verdict
-- **Fails the CI build** automatically on regression via a GitHub Actions workflow, with a branch protection rule on `main` that actually blocks a merge on failure
+- Compares a new run against a **baseline run** per evaluator, latency and cost, and applies configurable thresholds to produce a pass/fail verdict. Runs with failed cases or different evaluators are reported as `INCOMPLETE` / `INCOMPARABLE`, never as a quality verdict
+- Ships a **versioned benchmark** (`benchmarks/core-v1.yaml`: 39 cases, 12 in a fast `pr` suite) with stable case IDs, categories and immutable definitions ([docs/benchmarks.md](docs/benchmarks.md))
+- **Fails the CI build** automatically on regression via a GitHub Actions workflow. Making that failure block merges requires a branch protection rule on `main` that requires the `regression-check` job; that is a repository setting and is not verified or configured by this code
 - Serves a **visual comparison dashboard** at `/dashboard/compare` showing bar charts and per-question answer breakdowns
 
 ---
@@ -44,22 +45,35 @@ promptguard/
 │   ├── api/
 │   │   └── routes/
 │   │       ├── prompts.py          # CRUD for versioned prompts
-│   │       ├── datasets.py         # CRUD for test cases
+│   │       ├── datasets.py         # Test cases, versioned benchmark import (POST /datasets/import)
 │   │       ├── evaluations.py      # Trigger runs, poll status, compare
 │   │       └── dashboard.py        # Visual HTML comparison dashboard
 │   ├── core/
 │   │   ├── config.py               # Settings from environment variables
 │   │   ├── llm_gateway.py          # Ollama REST API wrapper
-│   │   ├── metrics.py              # ROUGE-L + Levenshtein scoring
-│   │   └── comparator.py           # Baseline vs candidate delta engine
+│   │   ├── metrics.py              # ROUGE-L + Levenshtein scoring (used by text_similarity)
+│   │   ├── evaluators/             # Evaluator interface, registry, built-in evaluators, gating rule
+│   │   ├── benchmark.py            # Benchmark validation and case content hash
+│   │   ├── run_executor.py         # Failure-aware execution of one run
+│   │   ├── comparator.py           # Comparability checks + baseline vs candidate delta engine
+│   │   └── gate_measurement.py     # Simulated gate measurement (no LLM)
 │   ├── db/
 │   │   ├── session.py              # SQLAlchemy engine + session
-│   │   └── models/                 # Prompt, Dataset, EvaluationRun, EvaluationResult
+│   │   └── models/                 # Prompt, Dataset, EvaluationRun, EvaluationResult, EvaluationScore
 │   ├── schemas/                    # Pydantic request/response models
 │   ├── tasks/
 │   │   ├── celery_app.py           # Celery instance
 │   │   └── evaluation_tasks.py     # Async LLM evaluation loop
 │   └── main.py                     # FastAPI app entrypoint
+├── alembic/                        # Database migrations
+├── benchmarks/
+│   ├── core-v1.yaml                # Versioned benchmark (pr + full suites)
+│   └── simulations/                # Hand-written answers used by the gate measurement
+├── docs/                           # evaluators.md, benchmarks.md, gate-measurement.md
+├── scripts/
+│   ├── load_benchmark.py           # Load a benchmark into a running API, print suite dataset ids
+│   └── measure_gate.py             # Controlled, simulated gate measurement
+├── tests/
 ├── prompts/
 │   └── production.yaml             # Source of truth for the currently "live" prompt
 ├── .github/
@@ -79,9 +93,10 @@ promptguard/
 | Table | Purpose |
 |---|---|
 | `prompts` | Versioned system instructions with model name |
-| `datasets` | Evaluation test cases (input query + expected output) |
+| `datasets` | Evaluation test cases (input query + expected output); benchmark cases also carry `benchmark`, `benchmark_version`, `case_key`, `task_type`, `category`, `difficulty`, `suites`, `eval_spec`, `content_hash` |
 | `evaluation_runs` | Master record per test run with status and baseline flag |
-| `evaluation_results` | Per-question metrics: similarity score, latency, token cost, actual output |
+| `evaluation_results` | Per-question execution record: status, latency, token cost, actual output (`similarity_score` is a compatibility copy of the `text_similarity` score) |
+| `evaluation_scores` | One row per (result, evaluator): evaluator name, version, kind, config and hash, `gating` flag, score or `ERROR`, raw details |
 
 ---
 
@@ -89,11 +104,12 @@ promptguard/
 
 | Metric | Default Threshold | Direction |
 |---|---|---|
-| Similarity | > 10% drop | Lower is worse |
+| Similarity evaluators (gating) | > 10% drop of the mean | Lower is worse |
+| Correctness evaluators (gating) | > 10% drop of the mean | Lower is worse |
 | Latency | > 50% spike | Higher is worse |
 | Cost | > 20% spike | Higher is worse |
 
-All thresholds are configurable via environment variables.
+Drops are relative to the baseline mean, per evaluator. Non-gating evaluators are reported but cannot fail the verdict. All thresholds are configurable via environment variables.
 
 ---
 
@@ -114,11 +130,17 @@ Each case has its own `status` (`PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`). A 
 
 | `comparison_status` | Meaning | `passed` |
 |---|---|---|
-| `OK` | Same cases, all executed and scored. `passed` is the threshold verdict | per thresholds |
-| `INCOMPLETE` | A run has failed, unfinished or unscored cases | always `false` |
-| `INCOMPARABLE` | The runs do not cover the same case IDs, or contain duplicates | always `false` |
+| `OK` | Same cases, all executed, every score present, same evaluators. `passed` is the threshold verdict | per thresholds |
+| `INCOMPLETE` | A run has failed, unfinished cases, or a missing / errored / invalid evaluator score | always `false` |
+| `INCOMPARABLE` | The runs do not cover the same case IDs, contain duplicates, or were scored by different evaluators (name, version, config or gating) | always `false` |
 
-**Policy (`comparison-policy-v1`): incomplete or incomparable evaluations block the release.** No aggregate score is reported for them, because an average over a subset of cases is not a measurement of the benchmark. `issues` lists exactly which cases and why.
+**Policy (`comparison-policy-v2`): incomplete or incomparable evaluations block the release.** No aggregate score is reported for them, because an average over a subset of cases is not a measurement of the benchmark. `issues` lists exactly which cases and why.
+
+## Evaluators and the benchmark
+
+* [docs/evaluators.md](docs/evaluators.md): the evaluator contract, built-in evaluators, which scores can block a release, how to add one, and an outline for calibrating a future LLM judge.
+* [docs/benchmarks.md](docs/benchmarks.md): file format, suites, loading, immutability, and the honest limits of `core-v1`.
+* [docs/gate-measurement.md](docs/gate-measurement.md): detection and false-block rates of the gate on **simulated** answers (`python scripts/measure_gate.py`). Not a measurement of any real model.
 
 ## Migrations and Tests
 
@@ -184,9 +206,11 @@ The seed script reads the baseline prompt straight from `prompts/production.yaml
 Open `/dashboard/compare?baseline_run_id=X&candidate_run_id=Y` in any browser to see:
 
 - Pass/fail verdict banner
-- Metric cards showing similarity, latency, and cost with baseline to candidate deltas
-- Bar chart comparing similarity scores per question side by side
-- Per-question breakdown showing the exact baseline and candidate answers
+- Metric cards per evaluator (advisory ones marked), plus latency and cost, with baseline to candidate deltas
+- A note when individual cases scored lower but the aggregate stayed within threshold
+- Bar chart of the gating score per question (mean of the gating evaluators), baseline vs candidate
+- Per-question breakdown with each evaluator's score and the exact baseline and candidate answers
+- For `INCOMPLETE` / `INCOMPARABLE` comparisons: the reasons and failed cases instead of a verdict
 
 ---
 
@@ -197,7 +221,7 @@ The GitHub Actions workflow runs automatically on every push to `main` and on ev
 **On a pull request** — comparing a proposed change against what's currently live:
 1. Fetches `main` and reads `prompts/production.yaml` from both the PR branch (candidate) and `main` (baseline)
 2. Installs Ollama, pulls `llama3.2`, and starts the full Docker stack
-3. Seeds both prompt versions and the evaluation datasets
+3. Seeds both prompt versions and loads the PR suite of the versioned benchmark (`scripts/load_benchmark.py`; fails if a published benchmark version was edited in place)
 4. Runs a baseline evaluation and a candidate evaluation
 5. Calls `/evaluations/compare` and fails the build if `passed` is `false`
 6. Posts the full comparison JSON to the GitHub Actions job summary
@@ -206,7 +230,7 @@ The GitHub Actions workflow runs automatically on every push to `main` and on ev
 1. Reads `prompts/production.yaml` at the new commit
 2. Runs a single evaluation against it and marks the result the new official baseline — no comparison step, since there's nothing to compare a fresh merge against
 
-A branch protection rule on `main` requires the `regression-check` job to pass before a pull request can be merged, so a detected regression doesn't just get reported — it actually blocks the merge.
+The job fails (red check) on a detected regression and on `INCOMPLETE` / `INCOMPARABLE` comparisons. Whether that blocks merging depends on a branch protection rule on `main` requiring the `regression-check` job; configure it in the repository settings, this repo cannot verify it. Not implemented yet: a stored JSON report and uploaded artifacts.
 
 ---
 
@@ -216,7 +240,9 @@ A branch protection rule on `main` requires the `regression-check` job to pass b
 |---|---|---|
 | `POST` | `/prompts/` | Create a versioned prompt |
 | `GET` | `/prompts/` | List all prompts |
-| `POST` | `/datasets/bulk` | Create multiple test cases at once |
+| `POST` | `/datasets/bulk` | Create multiple test cases at once (optional `eval_spec` per case) |
+| `POST` | `/datasets/import` | Idempotently import a versioned benchmark (409 if a published case changed) |
+| `GET` | `/datasets/` | List cases; filter by `benchmark`, `benchmark_version`, `suite`, `category` |
 | `POST` | `/evaluations/run` | Trigger an async evaluation run |
 | `GET` | `/evaluations/{id}` | Poll run status and results |
 | `PATCH` | `/evaluations/{id}/set-baseline` | Mark a completed run as the baseline |
@@ -235,7 +261,8 @@ A branch protection rule on `main` requires the `regression-check` job to pass b
 | `REDIS_URL` | Redis connection string | `redis://redis:6379/0` |
 | `CELERY_BROKER_URL` | Celery broker URL | `redis://redis:6379/0` |
 | `CELERY_RESULT_BACKEND` | Celery result backend | `redis://redis:6379/0` |
-| `REGRESSION_SIMILARITY_DROP_THRESHOLD` | Max allowed similarity drop | `0.10` |
+| `REGRESSION_SIMILARITY_DROP_THRESHOLD` | Max allowed drop of a gating similarity evaluator's mean | `0.10` |
+| `REGRESSION_CORRECTNESS_DROP_THRESHOLD` | Max allowed drop of a gating correctness evaluator's mean | `0.10` |
 | `REGRESSION_LATENCY_SPIKE_THRESHOLD` | Max allowed latency increase | `0.50` |
 | `REGRESSION_COST_SPIKE_THRESHOLD` | Max allowed cost increase | `0.20` |
 

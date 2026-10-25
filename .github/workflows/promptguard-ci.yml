@@ -9,7 +9,7 @@ on:
 jobs:
   regression-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     steps:
       - name: Checkout code
@@ -138,18 +138,14 @@ jobs:
           PROMPT_ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
           echo "prompt_id=$PROMPT_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Seed evaluation datasets
+      # The PR suite of the versioned benchmark (benchmarks/core-v1.yaml). The import is
+      # idempotent, and it fails (HTTP 409) if a published benchmark version was edited in
+      # place, which would silently change what "the same test" means.
+      - name: Load benchmark (PR suite)
         id: datasets
         run: |
-          RESPONSE=$(curl -s -X POST http://localhost:8000/datasets/bulk \
-            -H "Content-Type: application/json" \
-            -d '[
-              {"input_query": "What is 2 + 2?", "expected_output": "2 + 2 equals 4."},
-              {"input_query": "What is the capital of France?", "expected_output": "The capital of France is Paris."},
-              {"input_query": "What colour is the sky?", "expected_output": "The sky is blue."}
-            ]')
-          echo "Response: $RESPONSE"
-          IDS=$(echo "$RESPONSE" | python3 -c "import sys, json; print(','.join(str(d['id']) for d in json.load(sys.stdin)))")
+          IDS=$(python scripts/load_benchmark.py benchmarks/core-v1.yaml --suite pr --api http://localhost:8000)
+          echo "Dataset ids: $IDS"
           echo "ids=$IDS" >> "$GITHUB_OUTPUT"
 
       - name: Run baseline evaluation
@@ -168,9 +164,9 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           RUN_ID=${{ steps.run_baseline.outputs.run_id }}
-          for i in {1..30}; do
+          for i in {1..120}; do
             STATUS=$(curl -s http://localhost:8000/evaluations/$RUN_ID | python3 -c "import sys, json; print(json.load(sys.stdin)['status'])")
-            echo "Baseline run status: $STATUS ($i/30)"
+            echo "Baseline run status: $STATUS ($i/120)"
             if [ "$STATUS" == "COMPLETED" ]; then exit 0; fi
             if [ "$STATUS" == "FAILED" ]; then
               echo "::error::Baseline run $RUN_ID FAILED: no case succeeded (an evaluation failure, not a quality regression)"
@@ -208,9 +204,9 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           RUN_ID=${{ steps.run_candidate.outputs.run_id }}
-          for i in {1..30}; do
+          for i in {1..120}; do
             STATUS=$(curl -s http://localhost:8000/evaluations/$RUN_ID | python3 -c "import sys, json; print(json.load(sys.stdin)['status'])")
-            echo "Candidate run status: $STATUS ($i/30)"
+            echo "Candidate run status: $STATUS ($i/120)"
             if [ "$STATUS" == "COMPLETED" ]; then exit 0; fi
             if [ "$STATUS" == "FAILED" ]; then
               echo "::error::Candidate run $RUN_ID FAILED: no case succeeded (an evaluation failure, not a quality regression)"
@@ -270,9 +266,9 @@ jobs:
         if: github.event_name == 'push'
         run: |
           RUN_ID=${{ steps.run_push_eval.outputs.run_id }}
-          for i in {1..30}; do
+          for i in {1..120}; do
             STATUS=$(curl -s http://localhost:8000/evaluations/$RUN_ID | python3 -c "import sys, json; print(json.load(sys.stdin)['status'])")
-            echo "Push evaluation status: $STATUS ($i/30)"
+            echo "Push evaluation status: $STATUS ($i/120)"
             if [ "$STATUS" == "COMPLETED" ]; then exit 0; fi
             if [ "$STATUS" == "FAILED" ]; then
               echo "::error::Push evaluation $RUN_ID FAILED: no case succeeded (an evaluation failure, not a quality regression)"

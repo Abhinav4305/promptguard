@@ -74,3 +74,8 @@ class EvaluationResult(Base):
         back_populates="evaluation_results"
     )
     dataset: Mapped["Dataset"] = relationship(back_populates="evaluation_results")
+    # Per-evaluator scores (see evaluation_score.py). similarity_score above is a
+    # compatibility copy of the text_similarity score; scores is the source of truth.
+    scores: Mapped[list["EvaluationScore"]] = relationship(
+        back_populates="result", cascade="all, delete-orphan", order_by="EvaluationScore.evaluator_name"
+    )

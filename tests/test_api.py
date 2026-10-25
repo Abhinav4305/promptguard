@@ -12,7 +12,7 @@ from app.core.run_executor import execute_run
 from app.db.models import Dataset, EvaluationResult, EvaluationRun, ResultStatus, RunStatus
 from app.db.session import get_db
 from app.main import app
-from tests.conftest import FakeLLM, fake_score
+from tests.conftest import FakeLLM, fake_resolver, make_resolver
 
 
 @pytest.fixture()
@@ -45,7 +45,7 @@ def world(db, seed):
 def run_now(db, seed, prompt, datasets, llm=None):
     """Create a run and execute it to a terminal state with the real executor."""
     r = seed.run(prompt, datasets)
-    execute_run(db, r.id, llm_fn=llm or FakeLLM({"q1": "a1", "q2": "a2", "q3": "a3"}), score_fn=fake_score)
+    execute_run(db, r.id, llm_fn=llm or FakeLLM({"q1": "a1", "q2": "a2", "q3": "a3"}), resolver=fake_resolver)
     db.expire_all()
     return r.id
 

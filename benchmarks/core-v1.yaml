@@ -1,0 +1,649 @@
+# PromptGuard core regression benchmark, version 1.
+# Load with: python scripts/load_benchmark.py benchmarks/core-v1.yaml --suite pr
+# See docs/benchmarks.md. Do NOT edit cases in place: publish a new version instead.
+benchmark: core
+version: '1'
+description: 'PromptGuard core regression benchmark. ''pr'' suite = fast gate for pull requests; ''full''
+  = every case. A published version is immutable: change a case by publishing version 2.'
+cases:
+- case_key: math-add-001
+  input_query: What is 2 + 2?
+  expected_output: 2 + 2 equals 4.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - '4'
+  - name: text_similarity
+- case_key: geo-capital-france-001
+  input_query: What is the capital of France?
+  expected_output: The capital of France is Paris.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - paris
+  - name: text_similarity
+- case_key: sky-colour-001
+  input_query: What colour is the sky on a clear day?
+  expected_output: The sky is blue.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - blue
+  - name: text_similarity
+- case_key: lit-romeo-author-001
+  input_query: Who wrote Romeo and Juliet?
+  expected_output: Romeo and Juliet was written by William Shakespeare.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - shakespeare
+  - name: text_similarity
+- case_key: math-leap-year-001
+  input_query: How many days are in a leap year?
+  expected_output: A leap year has 366 days.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - '366'
+  - name: text_similarity
+- case_key: geo-capital-japan-001
+  input_query: What is the capital of Japan?
+  expected_output: The capital of Japan is Tokyo.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - tokyo
+  - name: text_similarity
+- case_key: sci-boiling-point-001
+  input_query: At what temperature in degrees Celsius does water boil at sea level?
+  expected_output: Water boils at 100 degrees Celsius at sea level.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - '100'
+  - name: text_similarity
+- case_key: sci-gold-symbol-001
+  input_query: What is the chemical symbol for gold?
+  expected_output: The chemical symbol for gold is Au.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - au
+  - name: text_similarity
+- case_key: hist-moon-landing-001
+  input_query: In what year did humans first land on the Moon?
+  expected_output: Humans first landed on the Moon in 1969.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - '1969'
+  - name: text_similarity
+- case_key: sci-planets-001
+  input_query: How many planets are in our solar system?
+  expected_output: There are eight planets in our solar system.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      any:
+      - '8'
+      - eight
+  - name: text_similarity
+- case_key: geo-ocean-001
+  input_query: What is the largest ocean on Earth?
+  expected_output: The Pacific Ocean is the largest ocean on Earth.
+  task_type: qa
+  category: normal
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - pacific
+  - name: text_similarity
+- case_key: math-sqrt-001
+  input_query: What is the square root of 144?
+  expected_output: The square root of 144 is 12.
+  task_type: qa
+  category: normal
+  difficulty: medium
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - '12'
+  - name: text_similarity
+- case_key: sci-photosynthesis-001
+  input_query: Which gas do plants absorb from the air for photosynthesis?
+  expected_output: Plants absorb carbon dioxide.
+  task_type: qa
+  category: normal
+  difficulty: medium
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      any:
+      - carbon dioxide
+      - co2
+  - name: text_similarity
+- case_key: cls-sentiment-pos-001
+  input_query: |-
+    Classify the sentiment of this review as exactly one word: positive, negative or neutral.
+    Review: 'I absolutely love this phone, the battery lasts for days.'
+  expected_output: positive
+  task_type: classification
+  category: normal
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: exact_match
+    config:
+      case_sensitive: false
+      ignore_punctuation: true
+      collapse_whitespace: true
+- case_key: cls-sentiment-neg-001
+  input_query: |-
+    Classify the sentiment of this review as exactly one word: positive, negative or neutral.
+    Review: 'The package arrived broken and support never replied.'
+  expected_output: negative
+  task_type: classification
+  category: normal
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: exact_match
+    config:
+      case_sensitive: false
+      ignore_punctuation: true
+      collapse_whitespace: true
+- case_key: cls-spam-001
+  input_query: |-
+    Is this message spam or not spam? Answer with exactly 'spam' or 'not spam'.
+    Message: 'WINNER!! Claim your free prize now by clicking this link.'
+  expected_output: spam
+  task_type: classification
+  category: normal
+  difficulty: medium
+  suites:
+  - full
+  eval_spec:
+  - name: exact_match
+    config:
+      case_sensitive: false
+      ignore_punctuation: true
+      collapse_whitespace: true
+- case_key: cls-language-001
+  input_query: |-
+    What language is this sentence written in? Answer with one word.
+    Sentence: 'Je voudrais un café, s'il vous plaît.'
+  expected_output: French
+  task_type: classification
+  category: normal
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: exact_match
+    config:
+      case_sensitive: false
+      ignore_punctuation: true
+      collapse_whitespace: true
+- case_key: instr-reply-ok-001
+  input_query: Reply with exactly the word OK and nothing else.
+  expected_output: OK
+  task_type: instruction_following
+  category: edge
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: exact_match
+    config:
+      case_sensitive: false
+      ignore_punctuation: true
+      collapse_whitespace: true
+- case_key: instr-uppercase-001
+  input_query: Write the word 'hello' in uppercase letters only, and nothing else.
+  expected_output: HELLO
+  task_type: instruction_following
+  category: edge
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: exact_match
+    config:
+      case_sensitive: true
+      ignore_punctuation: true
+      collapse_whitespace: true
+- case_key: instr-number-only-001
+  input_query: What is 15 multiplied by 4? Reply with the number only.
+  expected_output: '60'
+  task_type: instruction_following
+  category: edge
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: exact_match
+    config:
+      case_sensitive: false
+      ignore_punctuation: true
+      collapse_whitespace: true
+- case_key: amb-georgia-001
+  input_query: What is the capital of Georgia?
+  expected_output: Tbilisi (the country) or Atlanta (the US state).
+  task_type: qa
+  category: ambiguous
+  difficulty: medium
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      any:
+      - tbilisi
+      - atlanta
+  - name: text_similarity
+- case_key: amb-mercury-001
+  input_query: What is Mercury?
+  expected_output: Mercury is the smallest planet in the solar system; it is also a chemical element.
+  task_type: qa
+  category: ambiguous
+  difficulty: medium
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      any:
+      - planet
+      - element
+      - metal
+  - name: text_similarity
+- case_key: edge-divide-zero-001
+  input_query: What is 5 divided by 0?
+  expected_output: Division by zero is undefined.
+  task_type: qa
+  category: edge
+  difficulty: medium
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      any:
+      - undefined
+      - not defined
+      - cannot
+      - can't
+      - impossible
+      - infinity
+  - name: text_similarity
+- case_key: edge-negative-product-001
+  input_query: What is -3 times -4?
+  expected_output: -3 times -4 equals 12.
+  task_type: qa
+  category: edge
+  difficulty: medium
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - '12'
+      none:
+      - '-12'
+  - name: text_similarity
+- case_key: mal-typo-capital-001
+  input_query: Wat is teh capitl of Frnace?
+  expected_output: The capital of France is Paris.
+  task_type: qa
+  category: empty_malformed
+  difficulty: medium
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - paris
+  - name: text_similarity
+- case_key: mal-noise-capital-001
+  input_query: 'WHAT!!! IS??? THE... CAPITAL --- OF ### JAPAN'
+  expected_output: The capital of Japan is Tokyo.
+  task_type: qa
+  category: empty_malformed
+  difficulty: medium
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - tokyo
+  - name: text_similarity
+- case_key: long-needle-cat-001
+  input_query: |-
+    Read the text and answer in one short sentence: what is the name of the lighthouse keeper's cat?
+
+    Text:
+    The island of Marrow Point lies eleven miles off the northern coast. For almost two centuries a lighthouse has stood on its eastern cliff, and each keeper has lived in the small stone cottage at its base. The current keeper, Odalys Brennan, took over the post after her father retired. She rises before dawn, checks the lamp, records the weather in a leather logbook, and feeds the cottage's only other resident, an elderly ginger cat named Biscuit. Supply boats arrive every second Thursday with flour, lamp oil and mail. During storms the island is cut off completely, and the keeper has been known to go four days without speaking to another person. Visitors are rare, though a group of birdwatchers camps on the western shore each spring to count the nesting puffins. Last winter the old foghorn was replaced with a quieter electronic model, which the villagers on the mainland say they miss more than they expected.
+  expected_output: The cat is named Biscuit.
+  task_type: qa
+  category: long_input
+  difficulty: medium
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - biscuit
+  - name: text_similarity
+- case_key: long-needle-bridge-001
+  input_query: |-
+    Read the text and answer in one short sentence: in what year was the bridge completed?
+
+    Text:
+    Surveyors first proposed a crossing of the Alder River in 1851, but the town council rejected the plan as too expensive. A second proposal followed in 1869, and after years of fundraising the foundation stones were finally laid in 1878. Work was interrupted in 1881 when a flood swept away part of the scaffolding, and again in 1884 when the main contractor went bankrupt. The bridge, a three-arch structure of grey limestone, was completed in 1887 and opened by the mayor at a public ceremony attended by nearly four thousand people. It was widened for motor traffic in 1923 and closed to vehicles altogether in 1996, when a new road bridge was built half a mile downstream. Today the old bridge is used only by walkers and cyclists, and it is lit every evening by lamps modelled on the originals.
+  expected_output: The bridge was completed in 1887.
+  task_type: qa
+  category: long_input
+  difficulty: hard
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - '1887'
+  - name: text_similarity
+- case_key: longout-days-001
+  input_query: List the seven days of the week in order, separated by commas.
+  expected_output: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday
+  task_type: instruction_following
+  category: long_output
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - monday
+      - tuesday
+      - wednesday
+      - thursday
+      - friday
+      - saturday
+      - sunday
+  - name: text_similarity
+- case_key: longout-months-001
+  input_query: List all twelve months of the year, separated by commas.
+  expected_output: January, February, March, April, May, June, July, August, September, October, November,
+    December
+  task_type: instruction_following
+  category: long_output
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - january
+      - february
+      - march
+      - april
+      - may
+      - june
+      - july
+      - august
+      - september
+      - october
+      - november
+      - december
+  - name: text_similarity
+- case_key: json-person-001
+  input_query: |-
+    Extract the person's details as a JSON object with exactly the keys "name" (string) and "age" (integer). Reply with JSON only.
+    Text: 'Alice Johnson is 30 years old and lives in Boston.'
+  expected_output: '{"name": "Alice Johnson", "age": 30}'
+  task_type: structured_output
+  category: structured_output
+  difficulty: medium
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: json_schema
+    config:
+      schema:
+        type: object
+        required:
+        - name
+        - age
+        properties:
+          name:
+            type: string
+          age:
+            type: integer
+        additionalProperties: false
+  - name: json_equal
+- case_key: json-colours-001
+  input_query: Return a JSON array containing the three primary colours of light (red, green, blue) as
+    lowercase strings, in the order red, green, blue. Reply with JSON only.
+  expected_output: '["red", "green", "blue"]'
+  task_type: structured_output
+  category: structured_output
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: json_schema
+    config:
+      schema:
+        type: array
+        items:
+          type: string
+        minItems: 3
+        maxItems: 3
+  - name: json_equal
+- case_key: json-invoice-001
+  input_query: |-
+    Extract the invoice as a JSON object with keys "invoice_number" (string), "total" (number) and "currency" (string). Reply with JSON only.
+    Text: 'Invoice INV-2041: total due 149.50 EUR'
+  expected_output: '{"invoice_number": "INV-2041", "total": 149.5, "currency": "EUR"}'
+  task_type: structured_output
+  category: structured_output
+  difficulty: hard
+  suites:
+  - full
+  eval_spec:
+  - name: json_schema
+    config:
+      schema:
+        type: object
+        required:
+        - invoice_number
+        - total
+        - currency
+        properties:
+          invoice_number:
+            type: string
+          total:
+            type: number
+          currency:
+            type: string
+  - name: json_equal
+    config:
+      number_tolerance: 0.001
+- case_key: json-boolean-001
+  input_query: 'Is 7 an odd number? Reply with JSON only, in the form {"answer": true} or {"answer": false}.'
+  expected_output: '{"answer": true}'
+  task_type: structured_output
+  category: structured_output
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: json_equal
+- case_key: sim-capital-city-001
+  input_query: 'What is the capital of France? Answer in exactly this form: ''The capital of France is
+    X.'''
+  expected_output: The capital of France is Paris.
+  task_type: qa
+  category: similarity_unreliable
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - paris
+      none:
+      - lyon
+      - marseille
+      - london
+  - name: text_similarity
+- case_key: sim-negation-001
+  input_query: Is the Earth flat? Answer yes or no, then give one short sentence.
+  expected_output: No, the Earth is not flat; it is roughly spherical.
+  task_type: qa
+  category: similarity_unreliable
+  difficulty: easy
+  suites:
+  - pr
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - 'no'
+      none:
+      - 'yes'
+  - name: text_similarity
+- case_key: sim-minutes-001
+  input_query: 'How many minutes are in an hour? Answer in exactly this form: ''There are X minutes in
+    an hour.'''
+  expected_output: There are 60 minutes in an hour.
+  task_type: qa
+  category: similarity_unreliable
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - '60'
+  - name: text_similarity
+- case_key: sim-grams-001
+  input_query: 'How many grams are in a kilogram? Answer in exactly this form: ''There are X grams in
+    a kilogram.'''
+  expected_output: There are 1000 grams in a kilogram.
+  task_type: qa
+  category: similarity_unreliable
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      any:
+      - '1000'
+      - 1,000
+  - name: text_similarity
+- case_key: sim-whale-001
+  input_query: Is a whale a mammal or a fish? Answer in one short sentence.
+  expected_output: A whale is a mammal.
+  task_type: qa
+  category: similarity_unreliable
+  difficulty: easy
+  suites:
+  - full
+  eval_spec:
+  - name: contains
+    config:
+      all:
+      - mammal
+  - name: text_similarity

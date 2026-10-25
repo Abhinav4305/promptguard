@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from app.core.comparator import ComparisonStatus
 from app.db.models.evaluation_result import ErrorCategory, ResultStatus
 from app.db.models.evaluation_run import RunStatus
+from app.db.models.evaluation_score import ScoreStatus
 
 class EvaluationRunRequest(BaseModel):
     prompt_id: int
@@ -10,6 +11,19 @@ class EvaluationRunRequest(BaseModel):
     # the list is resolved when the run is created and then fixed for the run.
     dataset_ids: list[int]
     is_baseline: bool = False
+
+class EvaluationScoreResponse(BaseModel):
+    evaluator_name: str
+    evaluator_version: str
+    kind: str
+    config: dict | None = None
+    config_hash: str
+    gating: bool
+    status: ScoreStatus
+    score: float | None = None
+    details: dict | None = None
+    error_message: str | None = None
+    model_config = {"from_attributes": True}
 
 class EvaluationResultResponse(BaseModel):
     id: int
@@ -23,9 +37,11 @@ class EvaluationResultResponse(BaseModel):
     # -- measurements and model output (unchanged; NULL when the case did not succeed)
     latency_seconds: float | None
     token_cost: float | None
-    similarity_score: float | None
+    similarity_score: float | None      # compatibility copy of the text_similarity score
     actual_output: str | None
     created_at: datetime
+    # One entry per evaluator: name, version, config, gating flag, score or ERROR.
+    scores: list[EvaluationScoreResponse] = []
     model_config = {"from_attributes": True}
 
 class EvaluationRunResponse(BaseModel):
@@ -65,6 +81,28 @@ class PerDatasetRow(BaseModel):
     baseline_latency_s: float | None
     candidate_latency_s: float | None
     latency_delta_s: float | None
+    # evaluator name -> {baseline, candidate, delta, gating, kind, version}
+    scores: dict[str, dict] = {}
+
+class EvaluatorDeltaResponse(BaseModel):
+    name: str
+    version: str
+    kind: str
+    gating: bool
+    n_cases: int
+    baseline_avg: float
+    candidate_avg: float
+    delta_absolute: float
+    delta_relative: float | None
+    threshold_used: float
+    regression_detected: bool
+    advisory_regression: bool
+
+class RegressedCaseResponse(BaseModel):
+    dataset_id: int
+    evaluator: str
+    baseline_score: float
+    candidate_score: float
 
 class ComparisonIssueResponse(BaseModel):
     code: str
@@ -89,3 +127,5 @@ class ComparisonResponse(BaseModel):
     latency: MetricDeltaResponse | None = None
     cost: MetricDeltaResponse | None = None
     per_dataset: list[PerDatasetRow] = []
+    evaluators: list[EvaluatorDeltaResponse] = []
+    regressed_cases: list[RegressedCaseResponse] = []

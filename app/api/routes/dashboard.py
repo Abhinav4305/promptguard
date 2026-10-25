@@ -19,7 +19,7 @@ from html import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.comparator import ComparisonOutcome, evaluate_comparison
 from app.db.models.dataset import Dataset
@@ -57,6 +57,9 @@ def _css(verdict_color: str, verdict_bg: str) -> str:
   .issue {{ background: white; border-radius: 10px; padding: 12px 16px; border: 0.5px solid #D3D1C7; margin-bottom: 8px; font-size: 13px; line-height: 1.5; }}
   .issue-code {{ font-size: 11px; color: #888780; text-transform: uppercase; letter-spacing: 0.03em; }}
   .run-stats {{ font-size: 13px; color: #5F5E5A; margin: 0 0 16px; }}
+  .score-line {{ font-size: 12px; color: #5F5E5A; margin: 4px 0 0; }}
+  .tag {{ font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: #888780; border: 0.5px solid #D3D1C7; border-radius: 4px; padding: 0 4px; margin-left: 4px; }}
+  .note {{ font-size: 13px; color: #5F5E5A; margin: 0 0 24px; }}
 """
 
 
@@ -65,10 +68,11 @@ def _render_dashboard_html(
     candidate_run_id: int,
     passed: bool,
     summary: str,
-    similarity: dict,
+    evaluators: list[dict],
     latency: dict,
     cost: dict,
     rows: list[dict],
+    regressed_cases: list[dict] | None = None,
 ) -> str:
     verdict_color = "#1D9E75" if passed else "#D85A30"
     verdict_bg = "#E1F5EE" if passed else "#FAECE7"
@@ -107,27 +111,52 @@ def _render_dashboard_html(
     baseline_json = []
     candidate_json = []
     for row in rows:
-        b = row["baseline_similarity"] or 0
-        c = row["candidate_similarity"] or 0
-        delta_pct = row["similarity_delta_pct"]
+        b = row["baseline_gate"]
+        c = row["candidate_gate"]
+        delta_pct = row["gate_delta_pct"]
         delta_str = f"{delta_pct:+.1f}%" if delta_pct is not None else "—"
         worse = delta_pct is not None and delta_pct < -5
         delta_color = "#D85A30" if worse else "#5F5E5A"
         labels.append(row["question"][:40])
         baseline_json.append(round(b * 100, 1))
         candidate_json.append(round(c * 100, 1))
+        score_lines = "".join(
+            f"""<p class="score-line">{escape(name)}{'' if sc['gating'] else '<span class="tag">advisory</span>'}: """
+            f"""{sc['baseline']:.2f} -&gt; {sc['candidate']:.2f}</p>"""
+            for name, sc in sorted(row["scores"].items())
+        )
         rows_html += f"""
         <div class="q-card">
           <div class="q-head">
             <span class="q-text">{escape(row['question'])}</span>
             <span class="q-delta" style="color:{delta_color}">{delta_str}</span>
           </div>
+          {score_lines}
           <p class="q-answer-label">baseline answer</p>
           <p class="q-answer">{escape(row['baseline_output'])}</p>
           <p class="q-answer-label">candidate answer</p>
           <p class="q-answer">{escape(row['candidate_output'])}</p>
         </div>
         """
+
+    ev_cards = "".join(
+        metric_card(
+            ("Similarity" if e["name"] == "text_similarity" else e["name"].replace("_", " "))
+            + ("" if e["gating"] else " (advisory)"),
+            e["baseline_avg"], e["candidate_avg"], e["delta_relative"],
+            e["regression_detected"] or e["advisory_regression"], "pct",
+        )
+        for e in evaluators
+    )
+    regressed_note = ""
+    if regressed_cases:
+        ids = sorted({c["dataset_id"] for c in regressed_cases})
+        regressed_note = (
+            f'<p class="note">{len(ids)} case(s) scored lower than baseline on a gating evaluator '
+            f"(dataset ids: {escape(', '.join(map(str, ids[:15])))}"
+            f"{'…' if len(ids) > 15 else ''}). The verdict uses the aggregate score per evaluator, "
+            f"so individual drops below the threshold do not block on their own.</p>"
+        )
 
     # json.dumps gives valid JS. Every "<" becomes < (still the same string in JS) so
     # a question can neither close the script block nor open a new tag inside it.
@@ -152,13 +181,15 @@ def _render_dashboard_html(
   </div>
 
   <div class="metrics-grid">
-    {metric_card("Similarity", similarity['baseline_avg'], similarity['candidate_avg'], similarity['delta_relative'], similarity['regression_detected'], "pct")}
+    {ev_cards}
     {metric_card("Latency", latency['baseline_avg'], latency['candidate_avg'], latency['delta_relative'], latency['regression_detected'], "sec")}
     {metric_card("Cost", cost['baseline_avg'], cost['candidate_avg'], cost['delta_relative'], cost['regression_detected'], "cost")}
   </div>
 
+  {regressed_note}
+
   <div class="chart-card">
-    <p class="chart-title">Similarity score by question</p>
+    <p class="chart-title">Gating score by question (mean of gating evaluators)</p>
     <canvas id="simChart" height="90"></canvas>
   </div>
 
@@ -189,7 +220,7 @@ def _render_dashboard_html(
     options: {{
       responsive: true,
       plugins: {{ legend: {{ position: 'top', labels: {{ usePointStyle: true, boxWidth: 8 }} }} }},
-      scales: {{ y: {{ beginAtZero: true, max: 100, title: {{ display: true, text: 'similarity %' }} }} }}
+      scales: {{ y: {{ beginAtZero: true, max: 100, title: {{ display: true, text: 'score %' }} }} }}
     }}
   }});
 </script>
@@ -278,12 +309,14 @@ def dashboard_compare(
     # ALL rows, including failed/unfinished ones, so the preflight sees them.
     baseline_results = (
         db.query(EvaluationResult)
+        .options(selectinload(EvaluationResult.scores))
         .filter(EvaluationResult.run_id == baseline_run_id)
         .order_by(EvaluationResult.dataset_id)
         .all()
     )
     candidate_results = (
         db.query(EvaluationResult)
+        .options(selectinload(EvaluationResult.scores))
         .filter(EvaluationResult.run_id == candidate_run_id)
         .order_by(EvaluationResult.dataset_id)
         .all()
@@ -321,15 +354,24 @@ def dashboard_compare(
     candidate_by_dataset = {r.dataset_id: r for r in candidate_results}
     baseline_by_dataset = {r.dataset_id: r for r in baseline_results}
 
+    per_dataset = {row["dataset_id"]: row for row in report.per_dataset}
+
+    def gate_mean(results_scores: dict, side: str) -> float:
+        vals = [sc[side] for sc in results_scores.values() if sc["gating"]]
+        return sum(vals) / len(vals)
+
     rows = []
     for did in sorted(dataset_ids):
         b = baseline_by_dataset[did]   # coverage is identical on both sides (preflight)
         c = candidate_by_dataset[did]
+        scores = per_dataset[did]["scores"]
+        b_gate, c_gate = gate_mean(scores, "baseline"), gate_mean(scores, "candidate")
         rows.append({
             "question": question(did),
-            "baseline_similarity": b.similarity_score,
-            "candidate_similarity": c.similarity_score,
-            "similarity_delta_pct": round((c.similarity_score - b.similarity_score) * 100, 1),
+            "scores": scores,
+            "baseline_gate": b_gate,
+            "candidate_gate": c_gate,
+            "gate_delta_pct": round((c_gate - b_gate) * 100, 1),
             "baseline_output": (b.actual_output or "")[:300],
             "candidate_output": (c.actual_output or "")[:300],
         })
@@ -339,9 +381,10 @@ def dashboard_compare(
         candidate_run_id=candidate_run_id,
         passed=report.passed,
         summary=report.summary,
-        similarity=asdict(report.similarity),
+        evaluators=[asdict(e) for e in report.evaluators],
         latency=asdict(report.latency),
         cost=asdict(report.cost),
         rows=rows,
+        regressed_cases=[asdict(c) for c in report.regressed_cases],
     )
     return HTMLResponse(content=html)

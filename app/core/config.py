@@ -15,6 +15,9 @@ class Settings(BaseSettings):
 
     # Phase 4 regression thresholds (relative, 0.0–1.0)
     regression_similarity_drop_threshold: float = 0.10   # fail if similarity drops > 10%
+    # Same idea for task-correctness evaluators (exact_match, contains, json_*): fail if the
+    # mean score drops by more than this fraction of the baseline mean.
+    regression_correctness_drop_threshold: float = 0.10
     regression_latency_spike_threshold: float = 0.50     # fail if avg latency rises > 50%
     regression_cost_spike_threshold: float = 0.20        # fail if total cost rises > 20%
 

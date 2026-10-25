@@ -16,6 +16,7 @@ import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
 from app.db.migrate import alembic_config, run_migrations
@@ -118,6 +119,42 @@ def test_legacy_rows_are_reclassified_and_counters_backfilled(cfg, db_path):
         "SELECT error_message FROM evaluation_runs WHERE id=1").fetchone()[0]
 
 
+def test_legacy_scores_are_backfilled_as_text_similarity_v1(cfg, db_path):
+    from app.core.evaluators.base import config_hash
+
+    _legacy_database(cfg, db_path)
+    command.upgrade(cfg, "head")
+    c = sqlite3.connect(db_path)
+    rows = c.execute(
+        """SELECT r.run_id, r.dataset_id, s.evaluator_name, s.evaluator_version, s.kind,
+                  s.config_hash, s.gating, s.status, s.score
+             FROM evaluation_scores s JOIN evaluation_results r ON r.id = s.result_id
+            ORDER BY r.run_id, r.dataset_id"""
+    ).fetchall()
+    # Only SUCCEEDED legacy results get a score; failed/pending ones must not.
+    assert [(r[0], r[1]) for r in rows] == [(1, 1), (2, 1), (2, 2)]
+    for _, _, name, version, kind, chash, gating, status, _score in rows:
+        assert (name, version, kind, gating, status) == ("text_similarity", "1", "similarity", 1, "OK")
+        assert chash == config_hash({})           # same identity a new default-spec run records
+    assert [r[8] for r in rows] == [0.9, 0.8, 0.7]
+
+
+def test_benchmark_case_identity_is_unique_but_legacy_rows_are_unconstrained(cfg, db_path):
+    command.upgrade(cfg, "head")
+    c = sqlite3.connect(db_path)
+    # any number of legacy rows (no benchmark identity) is fine
+    for _ in range(3):
+        c.execute("INSERT INTO datasets(input_query, expected_output) VALUES ('q', 'a')")
+    c.execute("INSERT INTO datasets(input_query, expected_output, benchmark, benchmark_version, case_key) "
+              "VALUES ('q','a','core','1','case-1')")
+    # same key in another version is a different case
+    c.execute("INSERT INTO datasets(input_query, expected_output, benchmark, benchmark_version, case_key) "
+              "VALUES ('q','a','core','2','case-1')")
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute("INSERT INTO datasets(input_query, expected_output, benchmark, benchmark_version, case_key) "
+                  "VALUES ('q2','a2','core','1','case-1')")
+
+
 def test_unique_constraint_blocks_duplicate_results_after_upgrade(cfg, db_path):
     _legacy_database(cfg, db_path)
     command.upgrade(cfg, "head")
@@ -153,7 +190,8 @@ def test_run_migrations_adopts_a_database_created_by_the_old_create_all(tmp_path
     insp = inspect(engine)
     assert "expected_cases" in {col["name"] for col in insp.get_columns("evaluation_runs")}
     c = sqlite3.connect(path)
-    assert c.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002"
+    head = ScriptDirectory.from_config(alembic_config(url)).get_current_head()
+    assert c.execute("SELECT version_num FROM alembic_version").fetchone()[0] == head
     assert c.execute("SELECT COUNT(*) FROM prompts").fetchone()[0] == 1       # data kept
     engine.dispose()
 
@@ -204,7 +242,7 @@ def test_postgres_migrated_schema_works_end_to_end_with_the_orm():
     from app.core.comparator import ComparisonStatus, evaluate_comparison
     from app.core.run_executor import execute_run
     from app.db.models import Dataset, EvaluationResult, EvaluationRun, Prompt, ResultStatus, RunStatus
-    from tests.conftest import FakeLLM, fake_score
+    from tests.conftest import FakeLLM, fake_resolver, make_resolver
 
     engine = create_engine(os.environ["TEST_POSTGRES_URL"])
     with engine.begin() as conn:
@@ -226,8 +264,8 @@ def test_postgres_migrated_schema_works_end_to_end_with_the_orm():
         return r
 
     good, bad = new_run(), new_run()
-    execute_run(db, good.id, llm_fn=FakeLLM({"q1": "a1", "q2": "a2", "q3": "a3"}), score_fn=fake_score)
-    execute_run(db, bad.id, llm_fn=FakeLLM({"q2": httpx.ConnectError("refused")}), score_fn=fake_score)
+    execute_run(db, good.id, llm_fn=FakeLLM({"q1": "a1", "q2": "a2", "q3": "a3"}), resolver=fake_resolver)
+    execute_run(db, bad.id, llm_fn=FakeLLM({"q2": httpx.ConnectError("refused")}), resolver=fake_resolver)
     db.expire_all()
 
     assert db.get(EvaluationRun, good.id).status == RunStatus.COMPLETED
@@ -243,5 +281,94 @@ def test_postgres_migrated_schema_works_end_to_end_with_the_orm():
         db.add(EvaluationResult(run_id=good.id, dataset_id=cases[0].id))
         db.commit()
     db.rollback()
+    db.close()
+    engine.dispose()
+
+
+@pytest.mark.skipif(not os.environ.get("TEST_POSTGRES_URL"), reason="set TEST_POSTGRES_URL to run against Postgres")
+def test_postgres_0003_backfills_scores_and_enforces_benchmark_identity():
+    from sqlalchemy.exc import IntegrityError
+
+    url = os.environ["TEST_POSTGRES_URL"]
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "0002")
+    with engine.begin() as conn:
+        conn.exec_driver_sql("INSERT INTO prompts(id,version_tag,prompt_text,model_name) VALUES (1,'v','p','m')")
+        conn.exec_driver_sql("INSERT INTO datasets(id,input_query,expected_output) VALUES (1,'q','a'),(2,'q2','a2')")
+        conn.exec_driver_sql("INSERT INTO evaluation_runs(id,prompt_id,status,is_baseline) VALUES (1,1,'COMPLETED',false)")
+        conn.exec_driver_sql("INSERT INTO evaluation_results(run_id,dataset_id,status,similarity_score,latency_seconds,token_cost,actual_output) VALUES (1,1,'SUCCEEDED',0.9,1,0,'ok')")
+        conn.exec_driver_sql("INSERT INTO evaluation_results(run_id,dataset_id,status,actual_output) VALUES (1,2,'FAILED','x')")
+    command.upgrade(cfg, "head")
+
+    from app.core.evaluators.base import config_hash
+    with engine.connect() as conn:
+        scores = conn.exec_driver_sql(
+            "SELECT result_id, evaluator_name, evaluator_version, kind, gating, status, score, config_hash FROM evaluation_scores"
+        ).fetchall()
+    assert len(scores) == 1                                         # the FAILED row gets no score
+    rid, name, version, kind, gating, status, score, chash = scores[0]
+    assert (name, version, kind, gating, status, score) == ("text_similarity", "1", "similarity", True, "OK", 0.9)
+    assert chash == config_hash({})
+
+    with engine.begin() as conn:
+        conn.exec_driver_sql("INSERT INTO datasets(id,input_query,expected_output,benchmark,benchmark_version,case_key) VALUES (10,'a','b','core','1','k1')")
+        conn.exec_driver_sql("INSERT INTO datasets(id,input_query,expected_output) VALUES (11,'legacy1','x'),(12,'legacy2','y')")   # NULL keys never collide
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.exec_driver_sql("INSERT INTO datasets(id,input_query,expected_output,benchmark,benchmark_version,case_key) VALUES (13,'c','d','core','1','k1')")
+
+    command.downgrade(cfg, "0002")
+    command.upgrade(cfg, "head")
+    engine.dispose()
+
+
+@pytest.mark.skipif(not os.environ.get("TEST_POSTGRES_URL"), reason="set TEST_POSTGRES_URL to run against Postgres")
+def test_postgres_real_evaluators_end_to_end_through_the_comparator():
+    from sqlalchemy.orm import selectinload, sessionmaker
+
+    from app.core.comparator import ComparisonStatus, evaluate_comparison
+    from app.core.run_executor import execute_run
+    from app.db.models import Dataset, EvaluationResult, EvaluationRun, Prompt, ResultStatus, RunStatus
+    from tests.conftest import FakeLLM
+
+    engine = create_engine(os.environ["TEST_POSTGRES_URL"])
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    run_migrations(engine)
+    db = sessionmaker(bind=engine)()
+    prompt = Prompt(version_tag="v1", prompt_text="p", model_name="m")
+    spec = [{"name": "contains", "config": {"all": ["paris"]}}, {"name": "text_similarity"}]
+    cases = [Dataset(input_query=f"q{i}", expected_output="The capital is Paris.", eval_spec=spec) for i in range(4)]
+    db.add_all([prompt, *cases])
+    db.commit()
+
+    def run_with(answer):
+        r = EvaluationRun(prompt_id=prompt.id, status=RunStatus.PENDING, is_baseline=False, expected_cases=4)
+        db.add(r)
+        db.flush()
+        db.add_all(EvaluationResult(run_id=r.id, dataset_id=d.id, status=ResultStatus.PENDING) for d in cases)
+        db.commit()
+        execute_run(db, r.id, llm_fn=FakeLLM(default=answer))
+        db.expire_all()
+        rows = (db.query(EvaluationResult).options(selectinload(EvaluationResult.scores))
+                .filter_by(run_id=r.id).order_by(EvaluationResult.dataset_id).all())
+        return db.get(EvaluationRun, r.id), rows
+
+    base_run, base = run_with("The capital is Paris.")
+    para_run, para = run_with("Paris, of course, is the one you want.")
+    wrong_run, wrong = run_with("The capital is Lyon.")
+
+    assert base_run.status == RunStatus.COMPLETED
+    assert {s.evaluator_name for s in base[0].scores} == {"contains", "text_similarity"}
+    ok = evaluate_comparison(base_run, base, para_run, para)
+    assert ok.status == ComparisonStatus.OK and ok.passed                  # correct paraphrase allowed
+    bad = evaluate_comparison(base_run, base, wrong_run, wrong)
+    assert bad.status == ComparisonStatus.OK and not bad.passed            # wrong-but-similar blocked
+    assert "contains dropped" in bad.summary
+
+    assert db.query(EvaluationResult).count() == 12                        # 3 runs x 4 cases, nothing duplicated
     db.close()
     engine.dispose()
