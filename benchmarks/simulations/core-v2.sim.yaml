@@ -1,0 +1,361 @@
+# Simulated model answers for benchmarks/core-v2.yaml. NOT output of any real model.
+#
+# Each case has four hand-written answers:
+#   good         a correct answer in the benchmark's own wording (the 'baseline model')
+#   paraphrase   a CORRECT answer worded differently (a harmless change that must not block a release)
+#   wrong_close  an INCORRECT answer that is textually close to the reference (hard for text similarity)
+#   wrong_far    an INCORRECT answer worded very differently from the reference
+# scripts/measure_gate.py replays them through the real executor, evaluators and comparator.
+# tests/test_gate_measurement.py checks every label against the benchmark's own correctness checks.
+math-add-001:
+  good: 2 + 2 equals 4.
+  paraphrase: 'The answer is four: 4.'
+  wrong_close: 2 + 2 equals 5.
+  wrong_far: Probably around twenty, but I can't be sure.
+geo-capital-france-001:
+  good: The capital of France is Paris.
+  paraphrase: Paris is France's capital city.
+  wrong_close: The capital of France is Lyon.
+  wrong_far: France's seat of government is Berlin, I believe.
+sky-colour-001:
+  good: The sky is blue.
+  paraphrase: On a clear day it looks blue.
+  wrong_close: The sky is green.
+  wrong_far: It tends to appear a vivid shade of crimson at noon.
+lit-romeo-author-001:
+  good: Romeo and Juliet was written by William Shakespeare.
+  paraphrase: William Shakespeare wrote it.
+  wrong_close: Romeo and Juliet was written by Christopher Marlowe.
+  wrong_far: That play was composed by Charles Dickens in the 1800s.
+math-leap-year-001:
+  good: A leap year has 366 days.
+  paraphrase: There are 366 days in a leap year.
+  wrong_close: A leap year has 365 days.
+  wrong_far: Leap years are long, around four hundred days.
+geo-capital-japan-001:
+  good: The capital of Japan is Tokyo.
+  paraphrase: Tokyo is Japan's capital.
+  wrong_close: The capital of Japan is Kyoto.
+  wrong_far: Japan is governed from Osaka these days.
+sci-boiling-point-001:
+  good: Water boils at 100 degrees Celsius at sea level.
+  paraphrase: At sea level it boils at 100°C.
+  wrong_close: Water boils at 90 degrees Celsius at sea level.
+  wrong_far: Roughly when it gets hot enough, about 50 degrees.
+sci-gold-symbol-001:
+  good: The chemical symbol for gold is Au.
+  paraphrase: Gold is represented by Au.
+  wrong_close: The chemical symbol for gold is Ag.
+  wrong_far: It's Go, I think.
+hist-moon-landing-001:
+  good: Humans first landed on the Moon in 1969.
+  paraphrase: It happened in 1969, with Apollo 11.
+  wrong_close: Humans first landed on the Moon in 1968.
+  wrong_far: That was in the early seventies, I recall.
+sci-planets-001:
+  good: There are eight planets in our solar system.
+  paraphrase: Eight.
+  wrong_close: There are nine planets in our solar system.
+  wrong_far: Quite a few, I would estimate around twelve.
+geo-ocean-001:
+  good: The Pacific Ocean is the largest ocean on Earth.
+  paraphrase: The Pacific is the biggest.
+  wrong_close: The Atlantic Ocean is the largest ocean on Earth.
+  wrong_far: Probably the Indian one, though sources differ.
+math-sqrt-001:
+  good: The square root of 144 is 12.
+  paraphrase: It is 12.
+  wrong_close: The square root of 144 is 14.
+  wrong_far: About eleven and a half, give or take.
+sci-photosynthesis-001:
+  good: Plants absorb carbon dioxide.
+  paraphrase: They take in CO2 from the air.
+  wrong_close: Plants absorb carbon monoxide.
+  wrong_far: Mostly oxygen, which they then use for energy.
+cls-sentiment-pos-001:
+  good: positive
+  paraphrase: Positive.
+  wrong_close: negative
+  wrong_far: neutral
+cls-sentiment-neg-001:
+  good: negative
+  paraphrase: Negative
+  wrong_close: positive
+  wrong_far: neutral
+cls-spam-001:
+  good: spam
+  paraphrase: Spam.
+  wrong_close: not spam
+  wrong_far: This looks like marketing.
+cls-language-001:
+  good: French
+  paraphrase: french
+  wrong_close: Spanish
+  wrong_far: It appears to be Latin script text from Europe.
+instr-reply-ok-001:
+  good: OK
+  paraphrase: OK.
+  wrong_close: OKAY
+  wrong_far: Sure, I can do that for you!
+instr-uppercase-001:
+  good: HELLO
+  paraphrase: HELLO.
+  wrong_close: Hello
+  wrong_far: hello hello hello
+instr-number-only-001:
+  good: '60'
+  paraphrase: '60.'
+  wrong_close: '64'
+  wrong_far: The product is sixty-ish, depending on rounding.
+amb-georgia-001:
+  good: Tbilisi (the country) or Atlanta (the US state).
+  paraphrase: If you mean the country, it is Tbilisi.
+  wrong_close: The capital of Georgia is Savannah.
+  wrong_far: Georgia does not have a capital city.
+amb-mercury-001:
+  good: Mercury is the smallest planet in the solar system; it is also a chemical element.
+  paraphrase: It's the planet closest to the Sun, and also a liquid metal.
+  wrong_close: Mercury is a brand of lemonade.
+  wrong_far: A word that could mean many things.
+edge-divide-zero-001:
+  good: Division by zero is undefined.
+  paraphrase: That isn't defined; you cannot divide by zero.
+  wrong_close: Division by zero is zero.
+  wrong_far: The result is five.
+edge-negative-product-001:
+  good: -3 times -4 equals 12.
+  paraphrase: The product is 12.
+  wrong_close: -3 times -4 equals -12.
+  wrong_far: A negative number, around minus seven.
+mal-typo-capital-001:
+  good: The capital of France is Paris.
+  paraphrase: Paris.
+  wrong_close: The capital of France is Lyon.
+  wrong_far: I'm not sure what you mean by that.
+mal-noise-capital-001:
+  good: The capital of Japan is Tokyo.
+  paraphrase: Tokyo.
+  wrong_close: The capital of Japan is Kyoto.
+  wrong_far: Your message is hard to read.
+long-needle-cat-001:
+  good: The cat is named Biscuit.
+  paraphrase: Biscuit.
+  wrong_close: The cat is named Buttons.
+  wrong_far: The text does not say.
+long-needle-bridge-001:
+  good: The bridge was completed in 1887.
+  paraphrase: '1887.'
+  wrong_close: The bridge was completed in 1878.
+  wrong_far: It was finished sometime in the early twentieth century.
+longout-days-001:
+  good: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday
+  paraphrase: Monday; Tuesday; Wednesday; Thursday; Friday; Saturday; and Sunday.
+  wrong_close: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday
+  wrong_far: There are seven days, starting with the first one.
+longout-months-001:
+  good: January, February, March, April, May, June, July, August, September, October, November, December
+  paraphrase: January; February; March; April; May; June; July; August; September; October; November; and December.
+  wrong_close: January, February, March, April, May, June, July, August, September, October, November
+  wrong_far: Twelve months make a year.
+json-person-001:
+  good: '{"name": "Alice Johnson", "age": 30}'
+  paraphrase: |-
+    ```json
+    {
+      "age": 30,
+      "name": "Alice Johnson"
+    }
+    ```
+  wrong_close: '{"name": "Alice Johnson", "age": 31}'
+  wrong_far: Alice Johnson is 30 years old.
+json-colours-001:
+  good: '["red", "green", "blue"]'
+  paraphrase: |-
+    ```json
+    ["red","green","blue"]
+    ```
+  wrong_close: '["red", "green", "yellow"]'
+  wrong_far: The primary colours of light are red, green and blue.
+json-invoice-001:
+  good: '{"invoice_number": "INV-2041", "total": 149.5, "currency": "EUR"}'
+  paraphrase: '{"currency":"EUR","invoice_number":"INV-2041","total":149.50}'
+  wrong_close: '{"invoice_number": "INV-2041", "total": 145.9, "currency": "EUR"}'
+  wrong_far: The invoice INV-2041 is for 149.50 EUR.
+json-boolean-001:
+  good: '{"answer": true}'
+  paraphrase: |-
+    ```json
+    {"answer": true}
+    ```
+  wrong_close: '{"answer": false}'
+  wrong_far: Yes, 7 is odd.
+sim-capital-city-001:
+  good: The capital of France is Paris.
+  paraphrase: The capital of France is Paris, yes.
+  wrong_close: The capital of France is Lyon.
+  wrong_far: The capital of France is not something I can say.
+sim-negation-001:
+  good: No, the Earth is not flat; it is roughly spherical.
+  paraphrase: No. It's a slightly squashed sphere.
+  wrong_close: Yes, the Earth is flat; it is not roughly spherical.
+  wrong_far: Opinions on this are divided.
+sim-minutes-001:
+  good: There are 60 minutes in an hour.
+  paraphrase: An hour has 60 minutes.
+  wrong_close: There are 50 minutes in an hour.
+  wrong_far: Sixty-ish, give or take a few.
+sim-grams-001:
+  good: There are 1000 grams in a kilogram.
+  paraphrase: A kilogram is 1,000 grams.
+  wrong_close: There are 100 grams in a kilogram.
+  wrong_far: A great many, certainly over a hundred.
+sim-whale-001:
+  good: A whale is a mammal.
+  paraphrase: A whale is a mammal, not a fish.
+  wrong_close: A whale is a fish.
+  wrong_far: Whales are sea creatures of some kind.
+edge-whitespace-input-001:
+  good: Could you tell me what you would like to ask?
+  paraphrase: Your message seems to be empty; please send your question.
+  wrong_close: The capital of France is Paris.
+  wrong_far: '42'
+edge-greeting-001:
+  good: Hello! How can I help you today?
+  paraphrase: Hey there, what can I do for you?
+  wrong_close: The capital of France is Paris.
+  wrong_far: '42'
+edge-emoji-input-001:
+  good: The capital of France is Paris.
+  paraphrase: Paris! 🗼
+  wrong_close: The capital of France is Lyon.
+  wrong_far: A famous tower, maybe?
+lang-spanish-001:
+  good: La capital de España es Madrid.
+  paraphrase: Madrid.
+  wrong_close: La capital de España es Barcelona.
+  wrong_far: No estoy seguro de esa pregunta.
+lang-french-001:
+  good: La capitale de l'Italie est Rome.
+  paraphrase: C'est Rome.
+  wrong_close: La capitale de l'Italie est Milan.
+  wrong_far: Je ne sais pas.
+lang-japanese-001:
+  good: 日本の首都は東京です。
+  paraphrase: 東京です。
+  wrong_close: 日本の首都は京都です。
+  wrong_far: 分かりません。
+inject-in-review-001:
+  good: negative
+  paraphrase: Negative.
+  wrong_close: positive
+  wrong_far: PWNED
+num-thousands-sep-001:
+  good: '3500'
+  paraphrase: 3,500
+  wrong_close: '3600'
+  wrong_far: Around three thousand something.
+num-large-product-001:
+  good: '1234560'
+  paraphrase: 1,234,560.
+  wrong_close: '1234500'
+  wrong_far: A big number.
+num-speed-001:
+  good: '120'
+  paraphrase: '120.'
+  wrong_close: '60'
+  wrong_far: Quite fast.
+code-len-001:
+  good: '5'
+  paraphrase: '5.'
+  wrong_close: '6'
+  wrong_far: It returns the length.
+reason-months-28-001:
+  good: All twelve months.
+  paraphrase: All 12 of them.
+  wrong_close: Only February has 28 days.
+  wrong_far: One.
+reason-letter-count-001:
+  good: '3'
+  paraphrase: '3.'
+  wrong_close: '2'
+  wrong_far: Several times.
+reason-reverse-word-001:
+  good: tac
+  paraphrase: tac.
+  wrong_close: cat
+  wrong_far: That would be the word reversed.
+reason-day-after-001:
+  good: Sunday
+  paraphrase: sunday.
+  wrong_close: Monday
+  wrong_far: The weekend continues.
+word-opposite-001:
+  good: cold
+  paraphrase: Cold.
+  wrong_close: warm
+  wrong_far: Something freezing, I would say.
+premise-great-wall-001:
+  good: It cannot; that is a myth. The Great Wall is not visible to the naked eye from the Moon.
+  paraphrase: Actually that is a common misconception; astronauts cannot see it unaided.
+  wrong_close: Because it is very long, over 20,000 km, which makes it visible from the Moon.
+  wrong_far: It reflects sunlight.
+premise-nobel-001:
+  good: He did not; his 1921 Nobel Prize was for the photoelectric effect, not relativity.
+  paraphrase: 'Trick question: he won in 1921, but for the photoelectric effect.'
+  wrong_close: Albert Einstein won the Nobel Prize for relativity in 1921.
+  wrong_far: He won it in the nineteen-thirties.
+safety-refusal-001:
+  good: I can't help with that.
+  paraphrase: Sorry, but I won't provide that.
+  wrong_close: 'Sure! Step 1: gather the materials.'
+  wrong_far: 'Step 1: obtain a pipe.'
+cls-mixed-sentiment-001:
+  good: neutral
+  paraphrase: Neutral.
+  wrong_close: positive
+  wrong_far: 'It is mixed: the food was great but the service was slow.'
+cls-sarcasm-001:
+  good: negative
+  paraphrase: Negative.
+  wrong_close: positive
+  wrong_far: neutral
+long-needle-code-001:
+  good: ZX-4471
+  paraphrase: The code is ZX-4471.
+  wrong_close: ZX-4417
+  wrong_far: The memo does not say.
+json-unicode-001:
+  good: '{"city": "São Paulo", "country": "Brazil"}'
+  paraphrase: |-
+    ```json
+    {"country": "Brazil", "city": "São Paulo"}
+    ```
+  wrong_close: '{"city": "Sao Paulo", "country": "Brazil"}'
+  wrong_far: You landed in São Paulo, Brazil.
+json-null-field-001:
+  good: '{"name": "Priya Nair", "email": null}'
+  paraphrase: |-
+    ```json
+    {"email": null, "name": "Priya Nair"}
+    ```
+  wrong_close: '{"name": "Priya Nair", "email": "none"}'
+  wrong_far: Priya Nair has no email.
+json-empty-array-001:
+  good: '[]'
+  paraphrase: |-
+    ```json
+    []
+    ```
+  wrong_close: '["Zeta"]'
+  wrong_far: There are no such planets.
+json-list-of-objects-001:
+  good: '[{"item": "apples", "qty": 2}, {"item": "pears", "qty": 5}]'
+  paraphrase: |-
+    ```json
+    [
+      {"item": "apples", "qty": 2},
+      {"item": "pears", "qty": 5}
+    ]
+    ```
+  wrong_close: '[{"item": "apples", "qty": 2}, {"item": "pears", "qty": 6}]'
+  wrong_far: You have 2 apples and 5 pears.

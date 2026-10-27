@@ -17,7 +17,7 @@ When you tweak a prompt, swap an LLM model, or adjust generation settings, there
 - Scores each response with **pluggable, versioned evaluators**: objective checks (exact match, required/forbidden terms, JSON schema validity, JSON equality) plus the original **ROUGE-L / Levenshtein similarity**. Correctness checks gate a release; similarity is an indicator next to them. No LLM-as-judge yet (see [docs/evaluators.md](docs/evaluators.md))
 - Captures **latency** and **token cost** per call
 - Compares a new run against a **baseline run** per evaluator, latency and cost, and applies configurable thresholds to produce a pass/fail verdict. Runs with failed cases or different evaluators are reported as `INCOMPLETE` / `INCOMPARABLE`, never as a quality verdict
-- Ships a **versioned benchmark** (`benchmarks/core-v1.yaml`: 39 cases, 12 in a fast `pr` suite) with stable case IDs, categories and immutable definitions ([docs/benchmarks.md](docs/benchmarks.md))
+- Ships a **versioned benchmark** (`benchmarks/core-v2.yaml`: 65 cases including edge cases, 16 in a fast `pr` suite; `core-v1.yaml` is kept unchanged) with stable case IDs, categories and immutable definitions ([docs/benchmarks.md](docs/benchmarks.md))
 - **Fails the CI build** automatically on regression via a GitHub Actions workflow. Making that failure block merges requires a branch protection rule on `main` that requires the `regression-check` job; that is a repository setting and is not verified or configured by this code
 - Serves a **visual comparison dashboard** at `/dashboard/compare` showing bar charts and per-question answer breakdowns
 
@@ -67,7 +67,8 @@ promptguard/
 │   └── main.py                     # FastAPI app entrypoint
 ├── alembic/                        # Database migrations
 ├── benchmarks/
-│   ├── core-v1.yaml                # Versioned benchmark (pr + full suites)
+│   ├── core-v1.yaml                # Benchmark v1 (frozen, 39 cases)
+│   ├── core-v2.yaml                # Benchmark v2 = v1 + edge cases (pr + full suites)
 │   └── simulations/                # Hand-written answers used by the gate measurement
 ├── docs/                           # evaluators.md, benchmarks.md, gate-measurement.md
 ├── scripts/
@@ -139,7 +140,7 @@ Each case has its own `status` (`PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`). A 
 ## Evaluators and the benchmark
 
 * [docs/evaluators.md](docs/evaluators.md): the evaluator contract, built-in evaluators, which scores can block a release, how to add one, and an outline for calibrating a future LLM judge.
-* [docs/benchmarks.md](docs/benchmarks.md): file format, suites, loading, immutability, and the honest limits of `core-v1`.
+* [docs/benchmarks.md](docs/benchmarks.md): file format, suites, loading, immutability, and the honest limits of the benchmark.
 * [docs/gate-measurement.md](docs/gate-measurement.md): detection and false-block rates of the gate on **simulated** answers (`python scripts/measure_gate.py`). Not a measurement of any real model.
 
 ## Migrations and Tests
@@ -206,10 +207,11 @@ The seed script reads the baseline prompt straight from `prompts/production.yaml
 Open `/dashboard/compare?baseline_run_id=X&candidate_run_id=Y` in any browser to see:
 
 - Pass/fail verdict banner
-- Metric cards per evaluator (advisory ones marked), plus latency and cost, with baseline to candidate deltas
+- Three headline cards: **Quality** (mean of each question's gating checks), **Latency** and **Cost**, with baseline to candidate deltas
+- A collapsed "Quality checks" section with one row per check (advisory ones marked); a single failing group of checks blocks even when the overall quality barely moves
 - A note when individual cases scored lower but the aggregate stayed within threshold
-- Bar chart of the gating score per question (mean of the gating evaluators), baseline vs candidate
-- Per-question breakdown with each evaluator's score and the exact baseline and candidate answers
+- Bar chart of quality per question, baseline vs candidate
+- Per-question breakdown: the checks whose score changed and the exact baseline and candidate answers
 - For `INCOMPLETE` / `INCOMPARABLE` comparisons: the reasons and failed cases instead of a verdict
 
 ---
@@ -221,7 +223,7 @@ The GitHub Actions workflow runs automatically on every push to `main` and on ev
 **On a pull request** — comparing a proposed change against what's currently live:
 1. Fetches `main` and reads `prompts/production.yaml` from both the PR branch (candidate) and `main` (baseline)
 2. Installs Ollama, pulls `llama3.2`, and starts the full Docker stack
-3. Seeds both prompt versions and loads the PR suite of the versioned benchmark (`scripts/load_benchmark.py`; fails if a published benchmark version was edited in place)
+3. Seeds both prompt versions and loads the PR suite of the versioned benchmark (v2) (`scripts/load_benchmark.py`; fails if a published benchmark version was edited in place)
 4. Runs a baseline evaluation and a candidate evaluation
 5. Calls `/evaluations/compare` and fails the build if `passed` is `false`
 6. Posts the full comparison JSON to the GitHub Actions job summary

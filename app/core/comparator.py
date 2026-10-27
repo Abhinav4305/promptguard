@@ -90,7 +90,8 @@ class RegressedCase:
 class ComparisonReport:
     baseline_run_id: int
     candidate_run_id: int
-    similarity: MetricDelta | None    # text_similarity over all cases that have it; None if none do
+    quality: MetricDelta              # per-case mean of the GATING scores, averaged over cases (headline number)
+    similarity: MetricDelta | None    # text_similarity over all cases that have it; None if none do (legacy detail)
     latency: MetricDelta
     cost: MetricDelta
     passed: bool                      # True only if ALL gating metrics pass
@@ -445,6 +446,28 @@ def _similarity_delta(baseline_results, candidate_results, deltas) -> MetricDelt
     )
 
 
+def _case_quality(r) -> float:
+    """One number per case: the mean of its gating scores (advisory scores do not count)."""
+    gating = [sc.score for sc in _scores_of(r) if sc.gating]
+    return aggregate(gating)
+
+
+def _quality_delta(baseline_results, candidate_results, regressed: bool) -> MetricDelta:
+    """
+    The single quality figure. `regression_detected` is the verdict of the per-check
+    comparison (any gating evaluator dropped past its threshold), NOT a threshold on this
+    overall mean: a collapse in one small group of checks can move the overall mean by less
+    than the threshold and must still block.
+    """
+    b = round(aggregate([_case_quality(r) for r in baseline_results]), 6)
+    c = round(aggregate([_case_quality(r) for r in candidate_results]), 6)
+    abs_d, rel_d = _delta(b, c)
+    return MetricDelta(
+        baseline_avg=b, candidate_avg=c, delta_absolute=abs_d, delta_relative=rel_d,
+        regression_detected=regressed, threshold_used=settings.regression_correctness_drop_threshold,
+    )
+
+
 def _text_similarity(r) -> float | None:
     return next((sc.score for sc in _scores_of(r) if sc.evaluator_name == TEXT_SIMILARITY), None)
 
@@ -478,6 +501,7 @@ def compare_runs(
     # Cost regression: candidate rises MORE than threshold above baseline
     cost_regressed = cost_rel is not None and cost_rel > settings.regression_cost_spike_threshold
     quality_regressed = any(d.regression_detected for d in ev_deltas)
+    quality = _quality_delta(baseline_results, candidate_results, quality_regressed)
 
     passed = not (quality_regressed or lat_regressed or cost_regressed)
 
@@ -490,6 +514,8 @@ def compare_runs(
         b_sim, c_sim = _text_similarity(b_result), _text_similarity(c_result)
         row_sim_abs, row_sim_rel = _delta(b_sim, c_sim)
         row_lat_abs, _ = _delta(b_result.latency_seconds, c_result.latency_seconds)
+        b_q, c_q = _case_quality(b_result), _case_quality(c_result)
+        row_q_abs, row_q_rel = _delta(b_q, c_q)
         b_scores = {sc.evaluator_name: sc for sc in _scores_of(b_result)}
         scores = {}
         for sc in _scores_of(c_result):
@@ -501,6 +527,10 @@ def compare_runs(
             }
         per_dataset.append({
             "dataset_id": c_result.dataset_id,
+            "baseline_quality": round(b_q, 6),
+            "candidate_quality": round(c_q, 6),
+            "quality_delta": row_q_abs,
+            "quality_delta_pct": round(row_q_rel * 100, 2) if row_q_rel is not None else None,
             "baseline_similarity": b_sim,
             "candidate_similarity": c_sim,
             "similarity_delta": row_sim_abs,
@@ -548,6 +578,7 @@ def compare_runs(
     return ComparisonReport(
         baseline_run_id=baseline_run_id,
         candidate_run_id=candidate_run_id,
+        quality=quality,
         similarity=similarity,
         latency=MetricDelta(
             baseline_avg=b_lat, candidate_avg=c_lat, delta_absolute=lat_abs, delta_relative=lat_rel,

@@ -60,6 +60,12 @@ def _css(verdict_color: str, verdict_bg: str) -> str:
   .score-line {{ font-size: 12px; color: #5F5E5A; margin: 4px 0 0; }}
   .tag {{ font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: #888780; border: 0.5px solid #D3D1C7; border-radius: 4px; padding: 0 4px; margin-left: 4px; }}
   .note {{ font-size: 13px; color: #5F5E5A; margin: 0 0 24px; }}
+  .checks {{ background: white; border-radius: 10px; padding: 12px 16px; border: 0.5px solid #D3D1C7; margin-bottom: 24px; font-size: 13px; }}
+  .checks summary {{ cursor: pointer; font-weight: 500; }}
+  .checks table {{ width: 100%; border-collapse: collapse; margin: 12px 0 8px; }}
+  .checks th {{ text-align: left; font-size: 11px; color: #888780; text-transform: uppercase; letter-spacing: 0.03em; padding: 4px 8px 4px 0; }}
+  .checks td {{ padding: 4px 8px 4px 0; border-top: 0.5px solid #EEECE4; }}
+  .checks .note {{ margin: 8px 0 0; }}
 """
 
 
@@ -68,6 +74,7 @@ def _render_dashboard_html(
     candidate_run_id: int,
     passed: bool,
     summary: str,
+    quality: dict,
     evaluators: list[dict],
     latency: dict,
     cost: dict,
@@ -120,10 +127,12 @@ def _render_dashboard_html(
         labels.append(row["question"][:40])
         baseline_json.append(round(b * 100, 1))
         candidate_json.append(round(c * 100, 1))
+        # Only checks that changed are listed; unchanged ones would just be noise.
         score_lines = "".join(
-            f"""<p class="score-line">{escape(name)}{'' if sc['gating'] else '<span class="tag">advisory</span>'}: """
+            f"""<p class="score-line">{escape(name.replace('_', ' '))}{'' if sc['gating'] else '<span class="tag">advisory</span>'}: """
             f"""{sc['baseline']:.2f} -&gt; {sc['candidate']:.2f}</p>"""
             for name, sc in sorted(row["scores"].items())
+            if abs(sc["delta"]) > 1e-9
         )
         rows_html += f"""
         <div class="q-card">
@@ -139,15 +148,23 @@ def _render_dashboard_html(
         </div>
         """
 
-    ev_cards = "".join(
-        metric_card(
-            ("Similarity" if e["name"] == "text_similarity" else e["name"].replace("_", " "))
-            + ("" if e["gating"] else " (advisory)"),
-            e["baseline_avg"], e["candidate_avg"], e["delta_relative"],
-            e["regression_detected"] or e["advisory_regression"], "pct",
-        )
+    # One headline number per metric. The per-check detail sits in a collapsed section.
+    check_rows = "".join(
+        f"""<tr><td>{escape(e['name'].replace('_', ' '))}{'' if e['gating'] else '<span class="tag">advisory</span>'}</td>"""
+        f"""<td>{e['n_cases']}</td><td>{e['baseline_avg'] * 100:.1f}%</td><td>{e['candidate_avg'] * 100:.1f}%</td>"""
+        f"""<td style="color:{'#D85A30' if e['regression_detected'] else '#5F5E5A'}">"""
+        f"""{fmt_pct(e['delta_relative'])}{' (regression)' if e['regression_detected'] else ''}</td></tr>"""
         for e in evaluators
     )
+    checks_html = f"""
+  <details class="checks">
+    <summary>Quality checks ({len(evaluators)})</summary>
+    <table>
+      <tr><th>Check</th><th>Cases</th><th>Baseline</th><th>Candidate</th><th>Change</th></tr>
+      {check_rows}
+    </table>
+    <p class="note">Quality is the average of each question's gating checks. The verdict looks at every gating check on its own, so one failing group of checks blocks even when the overall average barely moves.</p>
+  </details>"""
     regressed_note = ""
     if regressed_cases:
         ids = sorted({c["dataset_id"] for c in regressed_cases})
@@ -181,15 +198,17 @@ def _render_dashboard_html(
   </div>
 
   <div class="metrics-grid">
-    {ev_cards}
+    {metric_card("Quality", quality['baseline_avg'], quality['candidate_avg'], quality['delta_relative'], quality['regression_detected'], "pct")}
     {metric_card("Latency", latency['baseline_avg'], latency['candidate_avg'], latency['delta_relative'], latency['regression_detected'], "sec")}
     {metric_card("Cost", cost['baseline_avg'], cost['candidate_avg'], cost['delta_relative'], cost['regression_detected'], "cost")}
   </div>
 
+  {checks_html}
+
   {regressed_note}
 
   <div class="chart-card">
-    <p class="chart-title">Gating score by question (mean of gating evaluators)</p>
+    <p class="chart-title">Quality by question</p>
     <canvas id="simChart" height="90"></canvas>
   </div>
 
@@ -220,7 +239,7 @@ def _render_dashboard_html(
     options: {{
       responsive: true,
       plugins: {{ legend: {{ position: 'top', labels: {{ usePointStyle: true, boxWidth: 8 }} }} }},
-      scales: {{ y: {{ beginAtZero: true, max: 100, title: {{ display: true, text: 'score %' }} }} }}
+      scales: {{ y: {{ beginAtZero: true, max: 100, title: {{ display: true, text: 'quality %' }} }} }}
     }}
   }});
 </script>
@@ -381,6 +400,7 @@ def dashboard_compare(
         candidate_run_id=candidate_run_id,
         passed=report.passed,
         summary=report.summary,
+        quality=asdict(report.quality),
         evaluators=[asdict(e) for e in report.evaluators],
         latency=asdict(report.latency),
         cost=asdict(report.cost),

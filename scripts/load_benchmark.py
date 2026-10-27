@@ -3,7 +3,7 @@
 Load a versioned benchmark file into a running PromptGuard API and print the dataset
 ids of one suite. Idempotent: re-running with an unchanged file creates nothing.
 
-    python scripts/load_benchmark.py benchmarks/core-v1.yaml --suite pr
+    python scripts/load_benchmark.py benchmarks/core-v2.yaml --suite pr
     -> prints e.g. 1,2,3,...   (comma-separated, ready for a CI step output)
 
 Exit codes: 0 ok, 1 invalid file, 2 API refused it (e.g. 409: a published version

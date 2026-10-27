@@ -99,6 +99,7 @@ def build_comparison_response(outcome: ComparisonOutcome) -> ComparisonResponse:
         passed=outcome.passed,
         summary=outcome.summary,
         issues=[ComparisonIssueResponse(**asdict(i)) for i in outcome.issues],
+        quality=MetricDeltaResponse(**asdict(report.quality)) if report else None,
         similarity=MetricDeltaResponse(**asdict(report.similarity)) if report and report.similarity else None,
         latency=MetricDeltaResponse(**asdict(report.latency)) if report else None,
         cost=MetricDeltaResponse(**asdict(report.cost)) if report else None,

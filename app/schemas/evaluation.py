@@ -74,6 +74,10 @@ class MetricDeltaResponse(BaseModel):
 
 class PerDatasetRow(BaseModel):
     dataset_id: int
+    baseline_quality: float | None = None      # mean of the case's gating scores
+    candidate_quality: float | None = None
+    quality_delta: float | None = None
+    quality_delta_pct: float | None = None
     baseline_similarity: float | None
     candidate_similarity: float | None
     similarity_delta: float | None
@@ -123,7 +127,11 @@ class ComparisonResponse(BaseModel):
     passed: bool
     summary: str
     issues: list[ComparisonIssueResponse] = []
-    similarity: MetricDeltaResponse | None = None
+    # quality = mean of the gating scores per case, averaged over cases; regression_detected is
+    # True when ANY gating check dropped past its threshold (see `evaluators`), even if the
+    # overall mean moved less than the threshold.
+    quality: MetricDeltaResponse | None = None
+    similarity: MetricDeltaResponse | None = None   # legacy: text_similarity only
     latency: MetricDeltaResponse | None = None
     cost: MetricDeltaResponse | None = None
     per_dataset: list[PerDatasetRow] = []

@@ -138,13 +138,13 @@ jobs:
           PROMPT_ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
           echo "prompt_id=$PROMPT_ID" >> "$GITHUB_OUTPUT"
 
-      # The PR suite of the versioned benchmark (benchmarks/core-v1.yaml). The import is
+      # The PR suite of the versioned benchmark (benchmarks/core-v2.yaml). The import is
       # idempotent, and it fails (HTTP 409) if a published benchmark version was edited in
       # place, which would silently change what "the same test" means.
       - name: Load benchmark (PR suite)
         id: datasets
         run: |
-          IDS=$(python scripts/load_benchmark.py benchmarks/core-v1.yaml --suite pr --api http://localhost:8000)
+          IDS=$(python scripts/load_benchmark.py benchmarks/core-v2.yaml --suite pr --api http://localhost:8000)
           echo "Dataset ids: $IDS"
           echo "ids=$IDS" >> "$GITHUB_OUTPUT"
 
